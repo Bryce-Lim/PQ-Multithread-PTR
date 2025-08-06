@@ -1,4 +1,4 @@
-#include "AMXInnerProductBF16.h"
+#include "AMXInnerProductBF16Ptr.h"
 #include <iostream>
 #include <stdio.h>
 #include <sys/syscall.h>
@@ -14,13 +14,13 @@
 #include <cstdint>
 
 // Constructor
-AMXInnerProductBF16::AMXInnerProductBF16() : amx_initialized(false)
+AMXInnerProductBF16Ptr::AMXInnerProductBF16Ptr() : amx_initialized(false)
 {
     reset_timers();
 }
 
 // Destructor
-AMXInnerProductBF16::~AMXInnerProductBF16()
+AMXInnerProductBF16Ptr::~AMXInnerProductBF16Ptr()
 {
     if (amx_initialized)
     {
@@ -29,7 +29,7 @@ AMXInnerProductBF16::~AMXInnerProductBF16()
 }
 
 // Initialize AMX functionality
-bool AMXInnerProductBF16::initialize()
+bool AMXInnerProductBF16Ptr::initialize()
 {
     if (syscall(SYS_arch_prctl, ARCH_REQ_XCOMP_PERM, XFEATURE_XTILEDATA))
     {
@@ -42,15 +42,15 @@ bool AMXInnerProductBF16::initialize()
 }
 
 // Timing getter methods
-double AMXInnerProductBF16::get_total_compute_time_ms() const { return total_compute_time.count() * 1000.0; }
-double AMXInnerProductBF16::get_padding_time_ms() const { return padding_time.count() * 1000.0; }
-double AMXInnerProductBF16::get_conversion_time_ms() const { return conversion_time.count() * 1000.0; }
-double AMXInnerProductBF16::get_chunking_time_ms() const { return chunking_time.count() * 1000.0; }
-double AMXInnerProductBF16::get_merging_time_ms() const { return merging_time.count() * 1000.0; }
-double AMXInnerProductBF16::get_actual_amx_time_ms() const { return actual_amx_time.count() * 1000.0; }
+double AMXInnerProductBF16Ptr::get_total_compute_time_ms() const { return total_compute_time.count() * 1000.0; }
+double AMXInnerProductBF16Ptr::get_padding_time_ms() const { return padding_time.count() * 1000.0; }
+double AMXInnerProductBF16Ptr::get_conversion_time_ms() const { return conversion_time.count() * 1000.0; }
+double AMXInnerProductBF16Ptr::get_chunking_time_ms() const { return chunking_time.count() * 1000.0; }
+double AMXInnerProductBF16Ptr::get_merging_time_ms() const { return merging_time.count() * 1000.0; }
+double AMXInnerProductBF16Ptr::get_actual_amx_time_ms() const { return actual_amx_time.count() * 1000.0; }
 
 // Reset all timing counters
-void AMXInnerProductBF16::reset_timers()
+void AMXInnerProductBF16Ptr::reset_timers()
 {
     total_compute_time = std::chrono::duration<double>::zero();
     padding_time = std::chrono::duration<double>::zero();
@@ -61,7 +61,7 @@ void AMXInnerProductBF16::reset_timers()
 }
 
 // Print comprehensive timing statistics
-void AMXInnerProductBF16::print_timing_stats() const
+void AMXInnerProductBF16Ptr::print_timing_stats() const
 {
     std::cout << "\n=== AMX Inner Product Timing Statistics ===\n";
     std::cout << std::fixed << std::setprecision(3);
@@ -77,7 +77,7 @@ void AMXInnerProductBF16::print_timing_stats() const
 }
 
 // Initialize tile config
-void AMXInnerProductBF16::init_tile_config(__tilecfg *tileinfo)
+void AMXInnerProductBF16Ptr::init_tile_config(__tilecfg *tileinfo)
 {
     int i;
     tileinfo->palette_id = 1;
@@ -107,9 +107,6 @@ size_t AMXInnerProductBF16Ptr::compute_inner_products(const bfloat16_t* data_poi
     if (dimension % 64 != 0) { throw std::runtime_error("Dimension must be divisible by 64"); }
     if (centroid_count % 16 != 0) { throw std::runtime_error("Number of centroids must be divisible by 16"); }
 
-    // Allocate buffers
-    allocate_buffers(data_count, centroid_count, dimension);
-
     // Initialize output array
     size_t total_distances = data_count * centroid_count;
     memset(distances, 0, total_distances * sizeof(bfloat16_t));
@@ -117,7 +114,7 @@ size_t AMXInnerProductBF16Ptr::compute_inner_products(const bfloat16_t* data_poi
     // Time padding and data preparation
 
     // Perform the computation
-    main_multiply(data_points, data_count, centroids, centroid_count, dimension, distances);
+    main_compute(data_points, data_count, centroids, centroid_count, dimension, distances);
 
     auto end_total = std::chrono::high_resolution_clock::now();
     total_compute_time += end_total - start_total;
@@ -165,7 +162,7 @@ void AMXInnerProductBF16Ptr::main_compute(const bfloat16_t* data_points, size_t 
                 
                 // Chunk and format data
                 auto start_conversion = std::chrono::high_resolution_clock::now();
-                data_format(data_points, data_chunk, data_offset, d_offset, actual_data_size, actual_dim_size);
+                data_format(data_chunk, data_points, actual_data_size, dimension, data_offset, d_offset);
                 auto end_conversion = std::chrono::high_resolution_clock::now();
                 conversion_time += end_conversion - start_conversion;
 
@@ -230,11 +227,11 @@ void AMXInnerProductBF16Ptr::main_compute(const bfloat16_t* data_points, size_t 
     delete[] results_chunk;
 }
 
-void AMXInnerProductBF16Ptr::centroid_format(const bfloat16_t* centroid_chunks, const bfloat16_t* centroids, size_t centroid_count, size_t dimension) {
+void AMXInnerProductBF16Ptr::centroid_format(bfloat16_t* centroid_chunks, const bfloat16_t* centroids, size_t centroid_count, size_t dimension) {
     for (int centroid_offset = 0; centroid_offset < centroid_count / MAX_SIZE; centroid_offset++) {
         for (int d_offset = 0; d_offset < dimension / MAX_COLS; d_offset++) {
             int k = 0;
-            int chunk_idx = centroid_offset * centroids[0].size() / MAX_COLS + d_offset;
+            int chunk_idx = centroid_offset * dimension / MAX_COLS + d_offset;
             // 2-wide processing for AMX tile formatting
             for (int i = 0; i < MAX_COLS; i += 2) {
                 for (int j = 0; j < MAX_SIZE; j++) {
@@ -242,9 +239,9 @@ void AMXInnerProductBF16Ptr::centroid_format(const bfloat16_t* centroid_chunks, 
                     int centroid_idx = centroid_offset * MAX_SIZE + j;
                     int dim_idx = d_offset * MAX_COLS + i;
 
-                    chunk[chunk_idx * MAX_COLS * MAX_SIZE + k] = centroids[centroid_idx * dimension + dim_idx];
+                    centroid_chunks[chunk_idx * MAX_COLS * MAX_SIZE + k] = centroids[centroid_idx * dimension + dim_idx];
                     k++;
-                    chunk[chunk_idx * MAX_COLS * MAX_SIZE + k] = centroids[centroid_idx * dimension + dim_idx + 1];
+                    centroid_chunks[chunk_idx * MAX_COLS * MAX_SIZE + k] = centroids[centroid_idx * dimension + dim_idx + 1];
                     k++;
                 }
             }
@@ -252,14 +249,14 @@ void AMXInnerProductBF16Ptr::centroid_format(const bfloat16_t* centroid_chunks, 
     }
 }
 
-void AMXInnerProductBF16Ptr::data_format(const bfloat16_t* data_chunk, const bfloat16_t* data, size_t data_count, size_t dimension, int data_offset, int d_offset) {
+void AMXInnerProductBF16Ptr::data_format(bfloat16_t* data_chunk, const bfloat16_t* data, size_t data_count, size_t dimension, int data_num, int element_num) {
     for (int i = 0; i < MAX_SIZE; i++)
     {
-        std::memcpy(&data_chunk[i * MAX_COLS], &data[data_num + i][element_num], MAX_COLS * sizeof(bfloat16_t));
+        std::memcpy(&data_chunk[i * MAX_COLS], &data[(data_num + i) * dimension + element_num], MAX_COLS * sizeof(bfloat16_t));
     }
 }
 
-bfloat16_t AMXInnerProductBF16::float_to_bfloat16(float f)
+bfloat16_t AMXInnerProductBF16Ptr::float_to_bfloat16(float f)
 {
     uint32_t bits;
     std::memcpy(&bits, &f, sizeof(float));
@@ -269,7 +266,7 @@ bfloat16_t AMXInnerProductBF16::float_to_bfloat16(float f)
     return static_cast<bfloat16_t>((bits + rounding_bias) >> 16);
 }
 
-float AMXInnerProductBF16::bfloat16_to_float(bfloat16_t bf16)
+float AMXInnerProductBF16Ptr::bfloat16_to_float(bfloat16_t bf16)
 {
     uint32_t bits = static_cast<uint32_t>(bf16) << 16;
     float result;

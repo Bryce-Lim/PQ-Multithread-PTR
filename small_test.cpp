@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <cmath>
 #include "ScalarInnerProduct.h"
+#include "AMXInnerProductBF16Ptr.h"
 
 void print_vector(const std::vector<float>& vec, const std::string& name) {
     std::cout << name << ": [";

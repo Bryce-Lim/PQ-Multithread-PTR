@@ -1,5 +1,5 @@
-#ifndef AMX_INNER_PRODUCT_BF16_H
-#define AMX_INNER_PRODUCT_BF16_H
+#ifndef AMX_INNER_PRODUCT_BF16_PTR_H
+#define AMX_INNER_PRODUCT_BF16_PTR_H
 
 #include <vector>
 #include <immintrin.h>
@@ -28,7 +28,7 @@ typedef struct __tile_config
     uint8_t rows[16];
 } __tilecfg;
 
-class AMXInnerProductBF16
+class AMXInnerProductBF16Ptr
 {
 private:
     bool amx_initialized;
@@ -52,19 +52,19 @@ private:
 
     // Formatting functions
     // void padVectors(std::vector<std::vector<bfloat16_t>> &vectors);
-    void centroid_format(std::vector<std::vector<bfloat16_t>> &centroids, std::vector<std::vector<bfloat16_t>> &centroid_chunk);
-    void data_format(std::vector<std::vector<bfloat16_t>> &data, std::vector<bfloat16_t> &data_chunk, int data_num, int element_num);
+    void centroid_format(bfloat16_t* centroid_chunks, const bfloat16_t* centroids, size_t centroid_count, size_t dimension);
+    void data_format(bfloat16_t* data_chunk, const bfloat16_t* data, size_t data_count, size_t dimension, int data_offset, int d_offset);
 
     // Computation and merging functions
-    void main_compute(const bfloat16_t* data_points, size_t data_count, const bfloat16_t* centroids, size_t centroid_count, size_t dimension, float* distances)
+    void main_compute(const bfloat16_t* data_points, size_t data_count, const bfloat16_t* centroids, size_t centroid_count, size_t dimension, float* distances);
 
     // Printing methods
     void print_bfloat16_vectors(const std::vector<std::vector<bfloat16_t>> &vecs);
 
 public:
     // Constructor and Destructor
-    AMXInnerProductBF16();
-    ~AMXInnerProductBF16();
+    AMXInnerProductBF16Ptr();
+    ~AMXInnerProductBF16Ptr();
 
     // Main functions
     bool initialize();
