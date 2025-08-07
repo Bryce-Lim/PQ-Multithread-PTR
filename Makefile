@@ -3,7 +3,7 @@
 
 # Compiler settings
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -mavx512f -mavx512bw -mavx512vl -mamx-tile -mamx-int8 -mamx-bf16 -fopenmp
+CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -mavx512f -mavx512bf16 -mavx512bw -mavx512vl -mamx-tile -mamx-int8 -mamx-bf16 -fopenmp -flax-vector-conversions
 SUPPRESS_WARNINGS = -Wno-missing-field-initializers -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-variable
 DEBUG_FLAGS = -g -O0 -DDEBUG
 RELEASE_FLAGS = -O3 -DNDEBUG -march=native

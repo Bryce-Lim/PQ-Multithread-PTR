@@ -69,6 +69,7 @@ public:
     // Main functions
     bool initialize();
     size_t compute_inner_products(const bfloat16_t* data_points, size_t data_count, const bfloat16_t* centroids, size_t centroid_count, size_t dimension, float* distances);
+    size_t compute_inner_products_fp32(const float *data_points, size_t data_count, const float *centroids, size_t centroid_count, size_t dimension, float *distances);
 
     // Timing methods
     void reset_timers();
@@ -86,6 +87,8 @@ public:
 
     // Check if AMX is properly initialized
     bool is_initialized() const { return amx_initialized; }
+
+    void float_to_bfloat16(const float* input_buffer, bfloat16_t* output_buffer, size_t count);
 
 };
 #endif
