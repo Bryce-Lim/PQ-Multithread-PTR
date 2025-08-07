@@ -154,9 +154,6 @@ void AMXInnerProductBF16Ptr::main_compute(const bfloat16_t* data_points, size_t 
         {
             size_t actual_centroid_size = std::min((size_t)MAX_SIZE, centroid_count - centroid_offset);
 
-            // Reset accumulator for this data-centroid block
-            std::memset(results_chunk, 0, sizeof(float) * MAX_SIZE * MAX_SIZE);
-
             for (size_t d_offset = 0; d_offset < dimension; d_offset += MAX_COLS)
             {
                 size_t actual_dim_size = std::min((size_t)MAX_COLS, dimension - d_offset);
@@ -202,13 +199,7 @@ void AMXInnerProductBF16Ptr::main_compute(const bfloat16_t* data_points, size_t 
                     size_t distance_idx = global_data_idx * centroid_count + global_centroid_idx;
                     size_t result_idx = i * MAX_SIZE + j;
                     
-                    if (distance_idx < data_count * centroid_count && result_idx < MAX_SIZE * MAX_SIZE) {
-                        distances[distance_idx] += results_chunk[result_idx];
-                    } else {
-                        std::cout << "ERROR: Array index out of bounds in merging" << std::endl;
-                        std::cout << "distance_idx: " << distance_idx << ", limit: " << data_count * centroid_count << std::endl;
-                        std::cout << "result_idx: " << result_idx << ", limit: " << MAX_SIZE * MAX_SIZE << std::endl;
-                    }
+                    distances[distance_idx] += results_chunk[result_idx];
                 }
             }
             auto end_merge = std::chrono::high_resolution_clock::now();

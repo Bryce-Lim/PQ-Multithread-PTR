@@ -18,8 +18,8 @@ typedef uint16_t bfloat16_t;
 // Configuration constants
 const int dim = 1024;             // Embedding dimension - must be multiple of 64 for AMX
 const int max_elements = 96000;    // Maximum number of vectors to load
-const int num_centroids = 16;    // Number of centroids - must be multiple of 16 for AMX
-const int rounds = 1;             // Number of test rounds for averaging
+const int num_centroids = 48;    // Number of centroids - must be multiple of 16 for AMX
+const int rounds = 3;             // Number of test rounds for averaging
 const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
 
 // Validate AMX constraints
@@ -44,7 +44,7 @@ static float bfloat16_to_float(bfloat16_t bf16) {
     return result;
 }
 
-// Comprehensive accuracy analysis
+// Simplified accuracy analysis - absolute differences only
 static void accuracyAnalyzer(const std::vector<float>& scalar_results, 
                             const std::vector<float>& comparison_results, 
                             const std::string& comparison_name)
@@ -56,14 +56,9 @@ static void accuracyAnalyzer(const std::vector<float>& scalar_results,
     }
 
     float max_abs_diff = 0.0f;
-    float max_rel_diff = 0.0f;
     float total_abs_diff = 0.0f;
-    float total_rel_diff = 0.0f;
-    size_t valid_comparisons = 0;
     size_t significant_errors = 0;
-    size_t zero_scalar_count = 0;
-    const float tolerance = 0.001f; // 0.1% tolerance
-    const float zero_threshold = 1e-4f; // Consider values below this as effectively zero
+    const float tolerance = 0.001f; // Absolute tolerance
 
     for (size_t i = 0; i < scalar_results.size(); ++i) {
         float abs_diff = std::abs(scalar_results[i] - comparison_results[i]);
@@ -71,91 +66,46 @@ static void accuracyAnalyzer(const std::vector<float>& scalar_results,
         total_abs_diff += abs_diff;
         max_abs_diff = std::max(max_abs_diff, abs_diff);
         
-        // Only calculate relative difference if scalar value is significantly non-zero
-        if (std::abs(scalar_results[i]) > zero_threshold) {
-            float rel_diff = abs_diff / std::abs(scalar_results[i]);
-            total_rel_diff += rel_diff;
-            max_rel_diff = std::max(max_rel_diff, rel_diff);
-            valid_comparisons++;
-            
-            if (rel_diff > tolerance) {
-                significant_errors++;
-            }
-        } else {
-            zero_scalar_count++;
+        if (abs_diff > tolerance) {
+            significant_errors++;
         }
     }
 
     float avg_abs_diff = total_abs_diff / scalar_results.size();
-    float avg_rel_diff = (valid_comparisons > 0) ? (total_rel_diff / valid_comparisons) : 0.0f;
 
     std::cout << "\n=== " << comparison_name << " ACCURACY ANALYSIS ===" << std::endl;
     std::cout << std::fixed << std::setprecision(8);
     std::cout << "Max absolute difference:     " << std::setw(12) << max_abs_diff << std::endl;
     std::cout << "Average absolute difference: " << std::setw(12) << avg_abs_diff << std::endl;
-    std::cout << std::fixed << std::setprecision(6);
-    std::cout << "Max relative difference:     " << std::setw(12) << (max_rel_diff * 100) << "%" << std::endl;
-    std::cout << "Average relative difference: " << std::setw(12) << (avg_rel_diff * 100) << "%" << std::endl;
-    std::cout << "Significant errors (>" << (tolerance * 100) << "%): " << std::setw(8) << significant_errors 
+    std::cout << "Values exceeding tolerance:  " << std::setw(8) << significant_errors 
               << " / " << scalar_results.size() << " (" << std::fixed << std::setprecision(2)
               << (100.0f * significant_errors / scalar_results.size()) << "%)" << std::endl;
+    std::cout << "Tolerance threshold:         " << std::setw(12) << std::setprecision(6) << tolerance << std::endl;
 
-    // Show sample of worst differences (excluding zero scalar values)
+    // Show sample of worst absolute differences
     std::vector<std::pair<float, size_t>> errors;
     for (size_t i = 0; i < scalar_results.size(); ++i) {
-        if (std::abs(scalar_results[i]) > zero_threshold) {
-            float rel_diff = std::abs(scalar_results[i] - comparison_results[i]) / std::abs(scalar_results[i]);
-            errors.push_back({rel_diff, i});
-        }
+        float abs_diff = std::abs(scalar_results[i] - comparison_results[i]);
+        errors.push_back({abs_diff, i});
     }
     
-    if (!errors.empty()) {
-        std::partial_sort(errors.begin(), errors.begin() + std::min((size_t)5, errors.size()), 
-                          errors.end(), std::greater<std::pair<float, size_t>>());
+    std::partial_sort(errors.begin(), errors.begin() + std::min((size_t)10, errors.size()), 
+                      errors.end(), std::greater<std::pair<float, size_t>>());
 
-        std::cout << "\nWorst 5 relative errors (excluding near-zero scalar values):" << std::endl;
-        std::cout << "Index    | Scalar       | " << comparison_name << std::setw(12-comparison_name.length()) << " | Rel Diff %" << std::endl;
-        std::cout << "---------|--------------|--------------|----------" << std::endl;
-        
-        for (size_t i = 0; i < std::min((size_t)5, errors.size()); ++i) {
-            size_t idx = errors[i].second;
-            std::cout << std::setw(8) << idx << " | "
-                      << std::setw(12) << std::fixed << std::setprecision(6) << scalar_results[idx] << " | "
-                      << std::setw(12) << comparison_results[idx] << " | "
-                      << std::setw(8) << std::setprecision(4) << (errors[i].first * 100) << "%" << std::endl;
-        }
-    } else {
-        std::cout << "\nNo valid relative error comparisons (all scalar values near zero)" << std::endl;
-    }
-
-    // Show worst absolute differences for zero scalar cases
-    if (zero_scalar_count > 0) {
-        std::vector<std::pair<float, size_t>> zero_errors;
-        for (size_t i = 0; i < scalar_results.size(); ++i) {
-            if (std::abs(scalar_results[i]) <= zero_threshold) {
-                float abs_diff = std::abs(comparison_results[i]);
-                zero_errors.push_back({abs_diff, i});
-            }
-        }
-        
-        std::partial_sort(zero_errors.begin(), zero_errors.begin() + std::min((size_t)5, zero_errors.size()), 
-                          zero_errors.end(), std::greater<std::pair<float, size_t>>());
-
-        std::cout << "\nWorst 5 absolute errors for near-zero scalar values:" << std::endl;
-        std::cout << "Index    | Scalar       | " << comparison_name << std::setw(12-comparison_name.length()) << " | Abs Diff" << std::endl;
-        std::cout << "---------|--------------|--------------|----------" << std::endl;
-        
-        for (size_t i = 0; i < std::min((size_t)5, zero_errors.size()); ++i) {
-            size_t idx = zero_errors[i].second;
-            std::cout << std::setw(8) << idx << " | "
-                      << std::setw(12) << std::fixed << std::setprecision(6) << scalar_results[idx] << " | "
-                      << std::setw(12) << comparison_results[idx] << " | "
-                      << std::setw(10) << std::setprecision(6) << zero_errors[i].first << std::endl;
-        }
+    std::cout << "\nWorst 10 absolute differences:" << std::endl;
+    std::cout << "Index    | Scalar       | " << comparison_name << std::setw(12-comparison_name.length()) << " | Abs Diff" << std::endl;
+    std::cout << "---------|--------------|--------------|----------" << std::endl;
+    
+    for (size_t i = 0; i < std::min((size_t)10, errors.size()); ++i) {
+        size_t idx = errors[i].second;
+        std::cout << std::setw(8) << idx << " | "
+                  << std::setw(12) << std::fixed << std::setprecision(6) << scalar_results[idx] << " | "
+                  << std::setw(12) << comparison_results[idx] << " | "
+                  << std::setw(10) << std::setprecision(6) << errors[i].first << std::endl;
     }
 
     // Assessment
-    if (avg_rel_diff > 0.001f) { // > 0.1%
+    if (avg_abs_diff > 0.001f) {
         std::cout << "\n⚠️  HIGH ACCURACY DIFFERENCE DETECTED!" << std::endl;
         if (comparison_name == "AMX") {
             std::cout << "This suggests potential issues with:" << std::endl;
@@ -166,17 +116,6 @@ static void accuracyAnalyzer(const std::vector<float>& scalar_results,
     } else {
         std::cout << "\n✅ " << comparison_name << " accuracy is acceptable" << std::endl;
     }
-}
-
-// Flatten 2D vector results to 1D for easier processing
-std::vector<float> flatten_results(const std::vector<std::vector<float>>& results) {
-    std::vector<float> flattened;
-    flattened.reserve(results.size() * (results.empty() ? 0 : results[0].size()));
-    
-    for (const auto& row : results) {
-        flattened.insert(flattened.end(), row.begin(), row.end());
-    }
-    return flattened;
 }
 
 int main()
@@ -480,20 +419,15 @@ int main()
     std::cout << "AMX speedup:                      " << std::fixed << std::setprecision(2) << speedup << "x" << std::endl;
     std::cout << "AMX throughput gain:              " << std::setprecision(2) << (amx_gflops/scalar_gflops) << "x" << std::endl;
     
-    // Calculate average relative difference (excluding zero scalars)
-    float total_rel_diff = 0.0f;
-    size_t valid_comparisons = 0;
+    // Calculate average absolute difference for summary
+    float total_abs_diff = 0.0f;
     for (size_t i = 0; i < scalar_results.size(); ++i) {
-        if (std::abs(scalar_results[i]) > 1e-6f) {
-            float rel_diff = std::abs(scalar_results[i] - amx_results[i]) / std::abs(scalar_results[i]);
-            total_rel_diff += rel_diff;
-            valid_comparisons++;
-        }
+        total_abs_diff += std::abs(scalar_results[i] - amx_results[i]);
     }
-    float avg_rel_diff = (valid_comparisons > 0) ? (total_rel_diff / valid_comparisons) : 0.0f;
+    float avg_abs_diff = total_abs_diff / scalar_results.size();
     
-    std::cout << "Average accuracy difference:      " << std::fixed << std::setprecision(4) 
-              << (avg_rel_diff * 100) << "%" << std::endl;
+    std::cout << "Average accuracy difference:      " << std::fixed << std::setprecision(6) 
+              << avg_abs_diff << " (absolute)" << std::endl;
 
     std::cout << std::string(80, '=') << std::endl;
 
