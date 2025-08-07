@@ -68,7 +68,7 @@ void AMXInnerProductBF16Ptr::print_timing_stats() const
 
     std::cout << " Total compute time:          " << std::setw(8) << get_total_compute_time_ms() << " ms\n";
     std::cout << " - Padding time:              " << std::setw(8) << get_padding_time_ms() << " ms\n";
-    std::cout << " - Chunking time:             " << std::setw(8) << get_chunking_time_ms() << " ms\n";
+    std::cout << " - Multiplication time:       " << std::setw(8) << get_chunking_time_ms() << " ms\n";
     std::cout << "     - Tile loading time:     " << std::setw(8) << get_conversion_time_ms() << " ms\n";
     std::cout << "     - Result merging time:   " << std::setw(8) << get_merging_time_ms() << " ms\n";
     std::cout << "     - Actual AMX time:       " << std::setw(8) << get_actual_amx_time_ms() << " ms\n";
@@ -111,19 +111,20 @@ size_t AMXInnerProductBF16Ptr::compute_inner_products(const bfloat16_t* data_poi
     size_t total_distances = data_count * centroid_count;
     memset(distances, 0, total_distances * sizeof(bfloat16_t));
 
-    // Time padding and data preparation
-
     // Perform the computation
+    auto start_chunk = std::chrono::high_resolution_clock::now();
     main_compute(data_points, data_count, centroids, centroid_count, dimension, distances);
+    auto end_chunk = std::chrono::high_resolution_clock::now();
 
     auto end_total = std::chrono::high_resolution_clock::now();
     total_compute_time += end_total - start_total;
+    chunking_time += end_chunk - start_chunk;
 
     return total_distances;
 }
 
-void AMXInnerProductBF16Ptr::main_compute(const bfloat16_t* data_points, size_t data_count, 
-                                          const bfloat16_t* centroids, size_t centroid_count, 
+void AMXInnerProductBF16Ptr::main_compute(const bfloat16_t* data_points, size_t data_count,
+                                          const bfloat16_t* centroids, size_t centroid_count,
                                           size_t dimension, float* distances) {
 
     // Chunk and format centroids
@@ -145,85 +146,78 @@ void AMXInnerProductBF16Ptr::main_compute(const bfloat16_t* data_points, size_t 
     // Calculate number of chunks needed
     size_t dim_chunks = (dimension + MAX_COLS - 1) / MAX_COLS;
 
-    for (int data_offset = 0; data_offset < data_count; data_offset += MAX_SIZE)
+    for (size_t data_offset = 0; data_offset < data_count; data_offset += MAX_SIZE)
     {
         size_t actual_data_size = std::min((size_t)MAX_SIZE, data_count - data_offset);
-        
-        for (int centroid_offset = 0; centroid_offset < centroid_count; centroid_offset += MAX_SIZE)
+
+        for (size_t centroid_offset = 0; centroid_offset < centroid_count; centroid_offset += MAX_SIZE)
         {
             size_t actual_centroid_size = std::min((size_t)MAX_SIZE, centroid_count - centroid_offset);
-            
+
             // Reset accumulator for this data-centroid block
             std::memset(results_chunk, 0, sizeof(float) * MAX_SIZE * MAX_SIZE);
-            
-            for (int d_offset = 0; d_offset < dimension; d_offset += MAX_COLS)
+
+            for (size_t d_offset = 0; d_offset < dimension; d_offset += MAX_COLS)
             {
                 size_t actual_dim_size = std::min((size_t)MAX_COLS, dimension - d_offset);
-                
+
                 // Chunk and format data
-                auto start_conversion = std::chrono::high_resolution_clock::now();
+                auto start_data_conversion = std::chrono::high_resolution_clock::now();
                 data_format(data_chunk, data_points, actual_data_size, dimension, data_offset, d_offset);
-                auto end_conversion = std::chrono::high_resolution_clock::now();
-                conversion_time += end_conversion - start_conversion;
+                auto end_data_conversion = std::chrono::high_resolution_clock::now();
+                conversion_time += end_data_conversion - start_data_conversion;
 
                 // Calculate centroid chunk index
-                int centroid_chunk_row = centroid_offset / MAX_SIZE;
-                int dim_chunk_col = d_offset / MAX_COLS;
-                int centroid_chunk_idx = centroid_chunk_row * dim_chunks + dim_chunk_col;
+                size_t centroid_chunk_row = centroid_offset / MAX_SIZE;
+                size_t dim_chunk_col = d_offset / MAX_COLS;
+                size_t centroid_chunk_idx = centroid_chunk_row * dim_chunks + dim_chunk_col;
 
                 auto start_AMX = std::chrono::high_resolution_clock::now();
-                
+
                 if (d_offset == 0) {
                     _tile_zero(1);  // Zero accumulator for first dimension chunk
                 } else {
                     _tile_loadd(1, results_chunk, STRIDE);  // Load previous partial results
                 }
-                
+
                 _tile_loadd(2, centroid_chunks + (MAX_SIZE * MAX_COLS * centroid_chunk_idx), STRIDE);
                 _tile_loadd(3, data_chunk, STRIDE);
 
                 _tile_dpbf16ps(1, 3, 2);  // Accumulate: tile1 += tile3 * tile2
                 _tile_stored(1, results_chunk, STRIDE);
-                
                 auto end_AMX = std::chrono::high_resolution_clock::now();
                 actual_amx_time += end_AMX - start_AMX;
             }
 
-            // Cache-optimized AVX-512 merging loop with prefetching
+            // Simplified and safer (but slower) merging without AVX-512
             auto start_merge = std::chrono::high_resolution_clock::now();
-
-            // Merge results_chunk back into distances array
+            
+            // Merge results_chunk back into distances array - SCALAR VERSION FOR SAFETY
             for (size_t i = 0; i < actual_data_size; ++i) {
                 size_t global_data_idx = data_offset + i;
                 
-                // Prefetch next cache line for better performance
-                if (i + 1 < actual_data_size) {
-                    __builtin_prefetch(&distances[(data_offset + i + 1) * centroid_count + centroid_offset], 1, 3);
-                }
-                
-                // Use AVX-512 for vectorized copying when possible
-                size_t j = 0;
-                for (; j + 16 <= actual_centroid_size; j += 16) {
-                    __m512 chunk_vals = _mm512_load_ps(&results_chunk[i * MAX_SIZE + j]);
-                    __m512 dist_vals = _mm512_load_ps(&distances[global_data_idx * centroid_count + centroid_offset + j]);
-                    __m512 sum_vals = _mm512_add_ps(chunk_vals, dist_vals);
-                    _mm512_store_ps(&distances[global_data_idx * centroid_count + centroid_offset + j], sum_vals);
-                }
-                
-                // Handle remaining elements
-                for (; j < actual_centroid_size; ++j) {
+                for (size_t j = 0; j < actual_centroid_size; ++j) {
                     size_t global_centroid_idx = centroid_offset + j;
-                    distances[global_data_idx * centroid_count + global_centroid_idx] += results_chunk[i * MAX_SIZE + j];
+                    
+                    size_t distance_idx = global_data_idx * centroid_count + global_centroid_idx;
+                    size_t result_idx = i * MAX_SIZE + j;
+                    
+                    if (distance_idx < data_count * centroid_count && result_idx < MAX_SIZE * MAX_SIZE) {
+                        distances[distance_idx] += results_chunk[result_idx];
+                    } else {
+                        std::cout << "ERROR: Array index out of bounds in merging" << std::endl;
+                        std::cout << "distance_idx: " << distance_idx << ", limit: " << data_count * centroid_count << std::endl;
+                        std::cout << "result_idx: " << result_idx << ", limit: " << MAX_SIZE * MAX_SIZE << std::endl;
+                    }
                 }
             }
-            
             auto end_merge = std::chrono::high_resolution_clock::now();
             merging_time += end_merge - start_merge;
         }
     }
 
     delete[] centroid_chunks;
-    delete[] data_chunk;  
+    delete[] data_chunk;
     delete[] results_chunk;
 }
 
