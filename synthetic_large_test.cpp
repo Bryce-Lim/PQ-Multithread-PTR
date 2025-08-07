@@ -1,9 +1,5 @@
 #include "ScalarInnerProduct.h"
 #include "AMXInnerProductBF16Ptr.h"
-#include "arrow/api.h"
-#include "arrow/io/api.h"
-#include "arrow/ipc/api.h"
-#include "parquet/arrow/reader.h"
 #include <algorithm>
 #include <random>
 #include <iostream>
@@ -17,10 +13,9 @@ typedef uint16_t bfloat16_t;
 
 // Configuration constants
 const int dim = 1024;             // Embedding dimension - must be multiple of 64 for AMX
-const int max_elements = 96000;    // Maximum number of vectors to load
-const int num_centroids = 48;    // Number of centroids - must be multiple of 16 for AMX
+const int max_elements = 960000;   // Maximum number of vectors to generate
+const int num_centroids = 32;    // Number of centroids - must be multiple of 16 for AMX
 const int rounds = 3;             // Number of test rounds for averaging
-const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
 
 // Validate AMX constraints
 static_assert(dim % 64 == 0, "Dimension must be multiple of 64 for AMX");
@@ -36,19 +31,58 @@ static bfloat16_t float_to_bfloat16(float f) {
     return static_cast<bfloat16_t>((bits + rounding_bias) >> 16);
 }
 
-// Convert bfloat16 to float32
-static float bfloat16_to_float(bfloat16_t bf16) {
+// Convert bfloat16 to float32 (unused but kept for completeness)
+[[maybe_unused]] static float bfloat16_to_float(bfloat16_t bf16) {
     uint32_t f32_bits = static_cast<uint32_t>(bf16) << 16;
     float result;
     std::memcpy(&result, &f32_bits, sizeof(float));
     return result;
 }
 
-// Simplified accuracy analysis - absolute differences only
+// Generate realistic synthetic embedding data
+void generate_embeddings(std::vector<float>& data, size_t count, size_t dimension, std::mt19937& gen) {
+    data.resize(count * dimension);
+    
+    // Use different distributions to make it more realistic
+    std::normal_distribution<float> normal_dist(0.0f, 1.0f);
+    std::uniform_real_distribution<float> uniform_dist(-1.0f, 1.0f);
+    std::exponential_distribution<float> exp_dist(1.0f);
+    
+    for (size_t i = 0; i < count; ++i) {
+        float* vec = &data[i * dimension];
+        
+        // Mix different distribution types to simulate real embeddings
+        for (size_t d = 0; d < dimension; ++d) {
+            if (d % 4 == 0) {
+                vec[d] = normal_dist(gen);
+            } else if (d % 4 == 1) {
+                vec[d] = uniform_dist(gen);
+            } else if (d % 4 == 2) {
+                vec[d] = exp_dist(gen) - 1.0f; // Center around 0
+            } else {
+                vec[d] = std::sin(static_cast<float>(i + d)) * 0.5f; // Some correlation
+            }
+        }
+        
+        // Normalize the vector to unit length (common for embeddings)
+        float norm = 0.0f;
+        for (size_t d = 0; d < dimension; ++d) {
+            norm += vec[d] * vec[d];
+        }
+        norm = std::sqrt(norm);
+        
+        if (norm > 1e-10f) {
+            for (size_t d = 0; d < dimension; ++d) {
+                vec[d] /= norm;
+            }
+        }
+    }
+}
+
+// Simplified accuracy analysis
 static void accuracyAnalyzer(const std::vector<float>& scalar_results, 
                             const std::vector<float>& comparison_results, 
-                            const std::string& comparison_name)
-{
+                            const std::string& comparison_name) {
     if (scalar_results.size() != comparison_results.size()) {
         std::cout << "ERROR: Result size mismatch - Scalar: " << scalar_results.size() 
                   << ", " << comparison_name << ": " << comparison_results.size() << std::endl;
@@ -118,16 +152,15 @@ static void accuracyAnalyzer(const std::vector<float>& scalar_results,
     }
 }
 
-int main()
-{
-    std::cout << "Large-Scale Scalar vs AMX Inner Product Comparison" << std::endl;
-    std::cout << "==================================================" << std::endl;
+int main() {
+    std::cout << "Large-Scale Synthetic AMX Inner Product Test" << std::endl;
+    std::cout << "=============================================" << std::endl;
     std::cout << "Configuration:" << std::endl;
     std::cout << "  Dimension: " << dim << std::endl;
-    std::cout << "  Max elements: " << max_elements << std::endl;
+    std::cout << "  Data points: " << max_elements << std::endl;
     std::cout << "  Centroids: " << num_centroids << std::endl;
     std::cout << "  Test rounds: " << rounds << std::endl;
-    std::cout << "  Data root: " << dataroot << std::endl << std::endl;
+    std::cout << "  Data type: Synthetic normalized embeddings" << std::endl << std::endl;
 
     // Verify AMX constraints
     std::cout << "AMX Constraint Check:" << std::endl;
@@ -137,146 +170,45 @@ int main()
     // Start Timer for Initialization
     auto init_start = std::chrono::high_resolution_clock::now();
 
-    // Load data from parquet files
-    std::vector<std::vector<float>> data_float;
-    data_float.reserve(max_elements);
-
-    std::cout << "Loading data from parquet files..." << std::endl;
+    std::cout << "Generating synthetic embedding data..." << std::endl;
     
-    int files_loaded = 0;
-    size_t partition_size = 500000;
-
-    for (int file_idx = 0; file_idx < 2 && data_float.size() < max_elements; file_idx++)
-    {
-        auto pool = arrow::default_memory_pool();
-        std::shared_ptr<arrow::io::RandomAccessFile> input;
-
-        std::string path = dataroot + "train-0" + std::to_string(file_idx) + "-of-10.parquet";
-        std::cout << "  Loading: " << path << std::endl;
-
-        auto maybe_input = arrow::io::ReadableFile::Open(path);
-        if (!maybe_input.ok()) {
-            std::cerr << "Error opening file: " << maybe_input.status().ToString() << std::endl;
-            continue;
-        }
-        input = maybe_input.ValueUnsafe();
-
-        std::unique_ptr<parquet::arrow::FileReader> arrow_reader;
-        auto status = parquet::arrow::OpenFile(input, pool, &arrow_reader);
-        if (!status.ok()) {
-            // std::cerr << "Error opening parquet file: " << status.ToString() << std::endl;
-            continue;
-        }
-
-        std::shared_ptr<arrow::Table> table;
-        status = arrow_reader->ReadTable(&table);
-        if (!status.ok()) {
-            // std::cerr << "Error reading table: " << status.ToString() << std::endl;
-            continue;
-        }
-
-        auto emb_col = table->column(1);
-        if (emb_col->chunks().size() != 1) {
-            std::cout << "Multiple chunks found: " << emb_col->chunks().size() << std::endl;
-        }
-
-        for (auto &arr : emb_col->chunks()) {
-            auto val = std::static_pointer_cast<arrow::DoubleArray>(
-                std::static_pointer_cast<arrow::ListArray>(arr)->values());
-
-            for (size_t i = 0; i < partition_size && data_float.size() < max_elements; i++) {
-                std::vector<float> vec(dim);
-                for (int j = 0; j < dim; j++) {
-                    vec[j] = (float)val->Value(i * dim + j);
-                }
-                data_float.push_back(vec);
-            }
-        }
-        files_loaded++;
-    }
-
-    if (data_float.empty()) {
-        std::cerr << "ERROR: No data loaded! Check your data path: " << dataroot << std::endl;
-        return -1;
-    }
-
-    std::cout << "Loaded " << data_float.size() << " vectors from " << files_loaded << " files" << std::endl;
-
-    // Normalize vectors
-    std::cout << "Normalizing vectors..." << std::endl;
-    for (auto &emb : data_float) {
-        float mag = 0.0f;
-        for (int d = 0; d < dim; d++) {
-            mag += emb[d] * emb[d];
-        }
-        mag = std::sqrt(mag);
-
-        if (mag > 1e-10f) {
-            for (int d = 0; d < dim; d++) {
-                emb[d] /= mag;
-            }
-        }
-    }
-
-    // Sample random centroids
-    std::cout << "Sampling " << num_centroids << " random centroids..." << std::endl;
-    std::random_device rd;
+    // Generate synthetic data
     std::mt19937 gen(42); // Fixed seed for reproducibility
-    std::vector<std::vector<float>> centroids_float;
-    std::sample(data_float.begin(), data_float.end(), 
-                std::back_inserter(centroids_float), num_centroids, gen);
+    
+    std::vector<float> data_float;
+    std::vector<float> centroids_float;
+    
+    generate_embeddings(data_float, max_elements, dim, gen);
+    generate_embeddings(centroids_float, num_centroids, dim, gen);
+    
+    std::cout << "Generated " << max_elements << " data vectors" << std::endl;
+    std::cout << "Generated " << num_centroids << " centroid vectors" << std::endl;
 
     // Convert to bfloat16
     std::cout << "Converting to bfloat16 format..." << std::endl;
     
     // Convert data points
-    std::vector<bfloat16_t> data_bf16_flat(data_float.size() * dim);
+    std::vector<bfloat16_t> data_bf16_flat(data_float.size());
     for (size_t i = 0; i < data_float.size(); ++i) {
-        for (int j = 0; j < dim; ++j) {
-            data_bf16_flat[i * dim + j] = float_to_bfloat16(data_float[i][j]);
-        }
+        data_bf16_flat[i] = float_to_bfloat16(data_float[i]);
     }
     
     // Convert centroids
-    std::vector<bfloat16_t> centroids_bf16_flat(num_centroids * dim);
-    for (int i = 0; i < num_centroids; ++i) {
-        for (int j = 0; j < dim; ++j) {
-            centroids_bf16_flat[i * dim + j] = float_to_bfloat16(centroids_float[i][j]);
-        }
+    std::vector<bfloat16_t> centroids_bf16_flat(centroids_float.size());
+    for (size_t i = 0; i < centroids_float.size(); ++i) {
+        centroids_bf16_flat[i] = float_to_bfloat16(centroids_float[i]);
     }
-
-    // Keep float versions for scalar computation
-    std::vector<float> data_float_flat(data_float.size() * dim);
-    std::vector<float> centroids_float_flat(num_centroids * dim);
-    
-    for (size_t i = 0; i < data_float.size(); ++i) {
-        for (int j = 0; j < dim; ++j) {
-            data_float_flat[i * dim + j] = data_float[i][j];
-        }
-    }
-    
-    for (int i = 0; i < num_centroids; ++i) {
-        for (int j = 0; j < dim; ++j) {
-            centroids_float_flat[i * dim + j] = centroids_float[i][j];
-        }
-    }
-
-    // Clean up 2D vectors to save memory
-    data_float.clear();
-    data_float.shrink_to_fit();
-    centroids_float.clear();
-    centroids_float.shrink_to_fit();
 
     auto init_end = std::chrono::high_resolution_clock::now();
     auto init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(init_end - init_start);
     
-    std::cout << "Initialization completed in " << init_duration.count() << " ms" << std::endl;
-    std::cout << "Data size: " << data_bf16_flat.size()/dim << " points × " << dim << " dimensions" << std::endl;
-    std::cout << "Centroids: " << centroids_bf16_flat.size()/dim << " × " << dim << " dimensions" << std::endl;
-    std::cout << "Total inner products to compute: " << (data_bf16_flat.size()/dim) * (centroids_bf16_flat.size()/dim) << std::endl << std::endl;
+    std::cout << "Data generation completed in " << init_duration.count() << " ms" << std::endl;
+    std::cout << "Data size: " << max_elements << " points × " << dim << " dimensions" << std::endl;
+    std::cout << "Centroids: " << num_centroids << " × " << dim << " dimensions" << std::endl;
+    std::cout << "Total inner products to compute: " << max_elements * num_centroids << std::endl << std::endl;
 
     // Prepare result arrays
-    size_t result_size = (data_bf16_flat.size() / dim) * (centroids_bf16_flat.size() / dim);
+    size_t result_size = max_elements * num_centroids;
     std::vector<float> scalar_results(result_size);
     std::vector<float> amx_results(result_size);
 
@@ -289,8 +221,8 @@ int main()
         
         auto start = std::chrono::high_resolution_clock::now();
         
-        size_t result = compute(data_float_flat.data(), data_bf16_flat.size() / dim,
-                               centroids_float_flat.data(), centroids_bf16_flat.size() / dim,
+        size_t result = compute(data_float.data(), max_elements,
+                               centroids_float.data(), num_centroids,
                                dim, scalar_results.data());
         
         auto end = std::chrono::high_resolution_clock::now();
@@ -318,8 +250,7 @@ int main()
         std::cout << "\n=== SCALAR PERFORMANCE ===" << std::endl;
         std::cout << "Average execution time: " << avg_scalar_time << " μs" << std::endl;
         
-        long long total_ops = static_cast<long long>(data_bf16_flat.size() / dim) * 
-                             (centroids_bf16_flat.size() / dim) * dim;
+        long long total_ops = static_cast<long long>(max_elements) * num_centroids * dim;
         double scalar_gflops = (total_ops * 2.0) / (avg_scalar_time * 1e-6) / 1e9;
         std::cout << "Scalar throughput: " << std::fixed << std::setprecision(2) 
                   << scalar_gflops << " GFLOPS" << std::endl;
@@ -340,8 +271,8 @@ int main()
         
         try {
             size_t result = amx_calc.compute_inner_products(
-                data_bf16_flat.data(), data_bf16_flat.size() / dim,
-                centroids_bf16_flat.data(), centroids_bf16_flat.size() / dim,
+                data_bf16_flat.data(), max_elements,
+                centroids_bf16_flat.data(), num_centroids,
                 dim, amx_results.data());
             
             auto end = std::chrono::high_resolution_clock::now();
@@ -384,8 +315,7 @@ int main()
     }
 
     // Calculate throughput
-    long long total_ops = static_cast<long long>(data_bf16_flat.size() / dim) * 
-                         (centroids_bf16_flat.size() / dim) * dim;
+    long long total_ops = static_cast<long long>(max_elements) * num_centroids * dim;
     
     std::cout << "\n=== THROUGHPUT (GFLOPS) ===" << std::endl;
     std::cout << std::fixed << std::setprecision(3);
@@ -413,7 +343,7 @@ int main()
     std::cout << "                              SUMMARY" << std::endl;
     std::cout << std::string(80, '=') << std::endl;
     
-    std::cout << "Problem size:                     " << (data_bf16_flat.size()/dim) << " × " << (centroids_bf16_flat.size()/dim) 
+    std::cout << "Problem size:                     " << max_elements << " × " << num_centroids 
               << " × " << dim << std::endl;
     std::cout << "Total operations:                 " << total_ops << std::endl;
     std::cout << "AMX speedup:                      " << std::fixed << std::setprecision(2) << speedup << "x" << std::endl;
@@ -430,6 +360,16 @@ int main()
               << avg_abs_diff << " (absolute)" << std::endl;
 
     std::cout << std::string(80, '=') << std::endl;
+    
+    // Data characteristics summary
+    std::cout << "\n=== DATA CHARACTERISTICS ===" << std::endl;
+    std::cout << "Synthetic data includes:" << std::endl;
+    std::cout << "  • Normal distribution components" << std::endl;
+    std::cout << "  • Uniform distribution components" << std::endl;
+    std::cout << "  • Exponential distribution components" << std::endl;
+    std::cout << "  • Correlated sinusoidal components" << std::endl;
+    std::cout << "  • All vectors normalized to unit length" << std::endl;
+    std::cout << "  • Fixed random seed for reproducibility" << std::endl;
 
     return 0;
 }
