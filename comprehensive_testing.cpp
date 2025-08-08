@@ -21,9 +21,9 @@ typedef uint16_t bfloat16_t;
 
 // Configuration constants
 const int dim = 1024;             // Embedding dimension - must be multiple of 64 for AMX
-const int max_elements = 128000;   // Maximum number of vectors to load (increased for larger scale)
-const int num_centroids = 64;     // Number of centroids - must be multiple of 16 for AMX
-const int rounds = 5;              // Number of test rounds for averaging
+const int max_elements = 1024000;   // Maximum number of vectors to load (increased for larger scale)
+const int num_centroids = 16;     // Number of centroids - must be multiple of 16 for AMX
+const int rounds = 10;              // Number of test rounds for averaging
 const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
 
 // Validate AMX constraints
@@ -461,7 +461,7 @@ int main()
 
     PerformanceMetrics scalar_perf("Scalar (FP32)");
     
-    for (int round = 0; round < rounds; ++round) {
+    for (int round = 0; round < 1; ++round) {
         std::cout << "Round " << (round + 1) << "/" << rounds << "..." << std::flush;
 
         auto start = std::chrono::high_resolution_clock::now();
@@ -535,25 +535,11 @@ int main()
     std::vector<std::pair<size_t, std::string>> thread_configs = {
         {2, "Multi AMX (2 threads)"},
         {4, "Multi AMX (4 threads)"},
+	{8, "Multi AMX (8 threads)"},
+	{16, "Multi AMX (16 threads)"},
+	{32, "Multi AMX (32 threads)"},
         {std::thread::hardware_concurrency(), "Multi AMX (max threads)"}
     };
-
-    // Remove duplicates and invalid configurations
-    thread_configs.erase(
-        std::remove_if(thread_configs.begin(), thread_configs.end(),
-            [](const std::pair<size_t, std::string>& config) {
-                return config.first == 0 || config.first > 8; // Conservative limit
-            }),
-        thread_configs.end()
-    );
-
-    // Remove duplicates based on thread count
-    std::sort(thread_configs.begin(), thread_configs.end());
-    auto last = std::unique(thread_configs.begin(), thread_configs.end(),
-        [](const std::pair<size_t, std::string>& a, const std::pair<size_t, std::string>& b) {
-            return a.first == b.first;
-        });
-    thread_configs.erase(last, thread_configs.end());
 
     std::vector<std::vector<float>*> multi_results = {&multi_amx_results_2t, &multi_amx_results_4t, &multi_amx_results_max};
     size_t result_idx = 0;
