@@ -324,21 +324,6 @@ void AMXInnerProductBF16PtrMTEnhanced::print_comprehensive_timing_stats() const
     std::cout << "  ├─ Thread joining:            " << std::setw(10) << get_thread_join_time_ms() << " ms" << std::endl;
     std::cout << "  └─ Actual parallel work:      " << std::setw(10) << get_avg_thread_time_ms() << " ms (avg)" << std::endl;
 
-    // Calculate overhead
-    double total_overhead = get_initialization_time_ms() + get_memory_allocation_time_ms() + 
-                           get_thread_spawn_time_ms() + get_thread_join_time_ms();
-    double overhead_percentage = (total_overhead / get_total_compute_time_ms()) * 100.0;
-    
-    std::cout << "\n⚙️  Threading Overhead Analysis:" << std::endl;
-    std::cout << "  Total overhead:               " << std::setw(10) << total_overhead << " ms" << std::endl;
-    std::cout << "  Overhead percentage:          " << std::setw(9) << overhead_percentage << " %" << std::endl;
-    
-    if (overhead_percentage > 20.0) {
-        std::cout << "  ⚠️  High overhead detected - consider larger workloads or fewer threads" << std::endl;
-    } else if (overhead_percentage < 5.0) {
-        std::cout << "  ✅ Low overhead - good threading efficiency" << std::endl;
-    }
-
     // Thread timing statistics
     if (!thread_timings.empty()) {
         std::cout << "\n🧵 Per-Thread Timing Statistics:" << std::endl;
@@ -381,31 +366,31 @@ void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
     }
 
     std::cout << "\n" << std::string(100, '=') << std::endl;
-    std::cout << "                           PER-THREAD TIMING BREAKDOWN" << std::endl;
+    std::cout << "                                     PER-THREAD TIMING BREAKDOWN" << std::endl;
     std::cout << std::string(100, '=') << std::endl;
 
     std::cout << std::left 
-              << std::setw(6) << "Thread"
+              << std::setw(10) << "Thread"
               << std::setw(10) << "Total"
-              << std::setw(8) << "Init"
+              << std::setw(10) << "Init"
               << std::setw(10) << "Format"
-              << std::setw(12) << "DataFmt"
-              << std::setw(10) << "TileLoad"
-              << std::setw(10) << "Compute"
+              << std::setw(10) << "DataFmt"
+              << std::setw(12) << "TileLoad"
+              << std::setw(12) << "Compute"
               << std::setw(10) << "Merge"
-              << std::setw(8) << "Points"
+              << std::setw(10) << "Points"
               << std::setw(6) << "Ops" << std::endl;
               
-    std::cout << std::string(6, '-') << " "
-              << std::string(9, '-') << " "
-              << std::string(7, '-') << " "
-              << std::string(9, '-') << " "
-              << std::string(11, '-') << " "
-              << std::string(9, '-') << " "
-              << std::string(9, '-') << " "
-              << std::string(9, '-') << " "
-              << std::string(7, '-') << " "
-              << std::string(5, '-') << std::endl;
+    std::cout << std::string(8, '-') << " "
+              << std::string(8, '-') << "  "
+              << std::string(7, '-') << "  "
+              << std::string(8, '-') << "  "
+              << std::string(10, '-') << "  "
+              << std::string(9, '-') << "  "
+              << std::string(9, '-') << "  "
+              << std::string(9, '-') << "  "
+              << std::string(8, '-') << "  "
+              << std::string(6, '-') << std::endl;
 
     std::cout << std::fixed << std::setprecision(1);
     
@@ -417,11 +402,11 @@ void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
                   << std::setw(8) << (timing.total_thread_time.count() * 1000.0) << "ms "
                   << std::setw(6) << (timing.thread_init_time.count() * 1000.0) << "ms "
                   << std::setw(8) << (timing.centroid_formatting_time.count() * 1000.0) << "ms "
-                  << std::setw(10) << (timing.data_formatting_time.count() * 1000.0) << "ms "
+                  << std::setw(8) << (timing.data_formatting_time.count() * 1000.0) << "ms "
                   << std::setw(8) << (timing.tile_loading_time.count() * 1000.0) << "ms "
                   << std::setw(8) << (timing.actual_computation_time.count() * 1000.0) << "ms "
-                  << std::setw(8) << (timing.result_merging_time.count() * 1000.0) << "ms "
-                  << std::setw(7) << timing.data_points_processed << " "
+                  << std::setw(10) << (timing.result_merging_time.count() * 1000.0) << "ms "
+                  << std::setw(7) << timing.data_points_processed << "    "
                   << std::setw(5) << timing.total_amx_operations << std::endl;
     }
 

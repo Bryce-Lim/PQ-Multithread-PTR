@@ -728,31 +728,6 @@ int main()
                   << single_amx_perf.speedup_vs_scalar << "x" << std::endl;
     }
 
-    // Enhanced multithreading analysis
-    std::cout << "\nMultithreading Analysis:" << std::endl;
-    if (enhanced_calculators.size() > 0) {
-        for (size_t config_idx = 0; config_idx < thread_configs.size(); ++config_idx) {
-            if (config_idx + 2 < performance_metrics.size() && performance_metrics[config_idx + 2].success) {
-                const auto& config = thread_configs[config_idx];
-                const AMXInnerProductBF16PtrMTEnhanced& calc = *enhanced_calculators[config_idx];
-                
-                double overhead_percentage = ((calc.get_thread_spawn_time_ms() + calc.get_thread_join_time_ms() + 
-                                              calc.get_memory_allocation_time_ms()) / calc.get_total_compute_time_ms()) * 100.0;
-                
-                std::cout << "  " << config.second << ":" << std::endl;
-                std::cout << "    Threading overhead: " << std::setprecision(1) << overhead_percentage << "%" << std::endl;
-                
-                if (overhead_percentage < 5.0) {
-                    std::cout << "    ✅ Excellent threading efficiency" << std::endl;
-                } else if (overhead_percentage < 15.0) {
-                    std::cout << "    ✅ Good threading efficiency" << std::endl;
-                } else {
-                    std::cout << "    ⚠️  High threading overhead" << std::endl;
-                }
-            }
-        }
-    }
-
     // Memory bandwidth analysis
     size_t total_memory_gb = (data_bf16_flat.size() * sizeof(bfloat16_t) +
                              centroids_bf16_flat.size() * sizeof(bfloat16_t) +
@@ -777,26 +752,6 @@ int main()
         }
     }
 
-    // Check if multithreading is beneficial
-    bool multithreading_beneficial = false;
-    for (const auto& metric : performance_metrics) {
-        if (metric.implementation_name.find("Enhanced Multi") != std::string::npos &&
-            metric.success && single_amx_perf.success) {
-            if (metric.throughput_gflops > single_amx_perf.throughput_gflops * 1.2) {
-                multithreading_beneficial = true;
-                break;
-            }
-        }
-    }
-
-    if (multithreading_beneficial) {
-        std::cout << "  ✅ Multithreading provides significant benefits for this dataset size" << std::endl;
-        std::cout << "  💡 Consider using enhanced multithreaded AMX for large-scale production workloads" << std::endl;
-    } else {
-        std::cout << "  ℹ️  Single-threaded AMX is sufficient for this workload" << std::endl;
-        std::cout << "  💡 Multithreading may help with larger datasets or when CPU is not saturated" << std::endl;
-    }
-
     // Accuracy recommendations
     bool accuracy_concerns = false;
     for (const auto& pair : accuracy_metrics) {
@@ -814,24 +769,6 @@ int main()
     } else {
         std::cout << "\n✅ All implementations meet accuracy requirements" << std::endl;
     }
-
-    // System-specific recommendations
-    std::cout << "\nSystem Optimization:" << std::endl;
-    std::cout << "  💡 Ensure NUMA topology is optimized for multi-socket systems" << std::endl;
-    std::cout << "  💡 Consider CPU affinity for consistent performance" << std::endl;
-    std::cout << "  💡 Monitor memory bandwidth utilization during production use" << std::endl;
-
-    // Data size recommendations
-    std::cout << "\nData Size Recommendations:" << std::endl;
-    if (data_bf16_flat.size() / dim < 10000) {
-        std::cout << "  💡 Dataset is relatively small - single-threaded may be optimal" << std::endl;
-    } else if (data_bf16_flat.size() / dim < 100000) {
-        std::cout << "  💡 Medium dataset - 2-4 threads likely optimal" << std::endl;
-    } else {
-        std::cout << "  💡 Large dataset - multithreading strongly recommended" << std::endl;
-    }
-
-    std::cout << std::string(80, '=') << std::endl;
 
     // ===== FINAL SUMMARY =====
     std::cout << "\n" << std::string(80, '=') << std::endl;
