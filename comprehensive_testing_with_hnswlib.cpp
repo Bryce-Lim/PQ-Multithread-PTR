@@ -1,6 +1,6 @@
 #include "ScalarInnerProduct.h"
 #include "AMXInnerProductBF16Ptr.h"
-#include "AMXInnerProductBF16PtrMT.h"
+#include "AMXInnerProductBF16PtrMTEnhanced.h"
 #include "HNSWLIBInnerProductPtr.h"
 #include "arrow/api.h"
 #include "arrow/io/api.h"
@@ -22,8 +22,8 @@ typedef uint16_t bfloat16_t;
 
 // Configuration constants
 const int dim = 1024;             // Embedding dimension - must be multiple of 64 for AMX
-const int max_elements = 1024000;   // Maximum number of vectors to load
-const int num_centroids = 160;     // Number of centroids - must be multiple of 16 for AMX
+const int max_elements = 1003520;   // Maximum number of vectors to load
+const int num_centroids = 16;     // Number of centroids - must be multiple of 16 for AMX
 const int rounds = 10;              // Number of test rounds for averaging
 const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
 
@@ -490,7 +490,7 @@ int main()
         {1, "HNSWLIB (1 thread)"},
         {4, "HNSWLIB (4 threads)"},
         {8, "HNSWLIB (8 threads)"},
-        {0, "HNSWLIB (optimized)"}
+        {224, "HNSWLIB (224 threads)"}
     };
 
     std::vector<std::vector<float>*> hnswlib_result_arrays = {
@@ -599,8 +599,8 @@ int main()
     std::cout << "MULTI-THREADED AMX COMPUTATION" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
 
-    PerformanceMetrics multi_amx_perf("Multi AMX (8 threads)");
-    AMXInnerProductBF16PtrMT multi_amx_calc(8);
+    PerformanceMetrics multi_amx_perf("Multi AMX (28 threads)");
+    AMXInnerProductBF16PtrMTEnhanced multi_amx_calc(28);
 
     if (!multi_amx_calc.initialize()) {
         std::cout << "❌ Multi-threaded AMX initialization failed!" << std::endl;
@@ -697,7 +697,7 @@ int main()
 
     if (multi_amx_perf.success) {
         std::cout << "\nMulti AMX Detailed Breakdown:" << std::endl;
-        multi_amx_calc.print_timing_stats();
+        multi_amx_calc.print_comprehensive_timing_stats();
     }
 
     // Threading efficiency analysis
