@@ -1,6 +1,7 @@
 #include "ScalarInnerProduct.h"
 #include "AMXInnerProductBF16Ptr.h"
 #include "AMXInnerProductBF16PtrMT.h"
+#include "AMXInnerProductBF16PtrMTEnhanced.h"
 #include "arrow/api.h"
 #include "arrow/io/api.h"
 #include "arrow/ipc/api.h"
@@ -526,70 +527,85 @@ int main()
     
     performance_metrics.push_back(single_amx_perf);
 
-    // ===== MULTI-THREADED AMX COMPUTATION =====
+    // ===== ENHANCED MULTI-THREADED AMX COMPUTATION =====
     std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "MULTI-THREADED AMX COMPUTATION" << std::endl;
+    std::cout << "ENHANCED MULTI-THREADED AMX COMPUTATION" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
 
-    // Test different thread counts
+    // Test different thread counts with enhanced timing
     std::vector<std::pair<size_t, std::string>> thread_configs = {
-	{8, "Multi AMX (8 threads)"},
-	{16, "Multi AMX (16 threads)"},
-	{224, "Multi AMX (224 threads)"},
-        {std::thread::hardware_concurrency(), "Multi AMX (max threads)"}
+        {2, "Enhanced Multi AMX (2 threads)"},
+        {4, "Enhanced Multi AMX (4 threads)"},
+        {8, "Enhanced Multi AMX (8 threads)"},
+        {std::thread::hardware_concurrency(), "Enhanced Multi AMX (max threads)"}
     };
 
-    std::vector<std::vector<float>*> multi_results = {&multi_amx_results_2t, &multi_amx_results_4t, &multi_amx_results_max};
-    size_t result_idx = 0;
+    // Store results for each enhanced configuration
+    std::vector<std::vector<float>> enhanced_results_storage;
+    std::vector<std::unique_ptr<AMXInnerProductBF16PtrMTEnhanced>> enhanced_calculators;
+    
+    enhanced_results_storage.reserve(thread_configs.size());
+    enhanced_calculators.reserve(thread_configs.size());
 
-    for (const auto& config : thread_configs) {
-        if (result_idx >= multi_results.size()) break;
-        
+    for (size_t config_idx = 0; config_idx < thread_configs.size(); ++config_idx) {
+        const auto& config = thread_configs[config_idx];
         size_t num_threads = config.first;
         std::string config_name = config.second;
-        
+
         std::cout << "\n--- " << config_name << " ---" << std::endl;
-        
+
         PerformanceMetrics multi_perf(config_name);
-        AMXInnerProductBF16PtrMT multi_amx_calc(num_threads);
         
+        // Create calculator and store it for later timing analysis
+	enhanced_calculators.emplace_back(std::make_unique<AMXInnerProductBF16PtrMTEnhanced>(num_threads));
+	AMXInnerProductBF16PtrMTEnhanced& multi_amx_calc = *enhanced_calculators.back();
+
         if (!multi_amx_calc.initialize()) {
-            std::cout << "❌ Multi-threaded AMX initialization failed" << std::endl;
+            std::cout << "❌ Enhanced multi-threaded AMX initialization failed" << std::endl;
             multi_perf.success = false;
+            enhanced_results_storage.emplace_back(); // Add empty vector for failed case
         } else {
-            std::cout << "✅ Multi-threaded AMX initialized with " << num_threads << " threads" << std::endl;
+            std::cout << "✅ Enhanced multi-threaded AMX initialized with " << num_threads << " threads" << std::endl;
 
-            for (int round = 0; round < rounds; ++round) {
-                std::cout << "Round " << (round + 1) << "/" << rounds << "..." << std::flush;
+            // Create results vector for this configuration
+            enhanced_results_storage.emplace_back(result_size);
+            std::vector<float>& enhanced_results = enhanced_results_storage.back();
 
-                multi_amx_calc.reset_timers();
-                auto start = std::chrono::high_resolution_clock::now();
+            std::cout << "Running enhanced timing analysis..." << std::flush;
 
-                try {
-                    size_t result = multi_amx_calc.compute_inner_products(
-                        data_bf16_flat.data(), data_bf16_flat.size() / dim,
-                        centroids_bf16_flat.data(), centroids_bf16_flat.size() / dim,
-                        dim, multi_results[result_idx]->data());
+            multi_amx_calc.reset_timers();
+            auto start = std::chrono::high_resolution_clock::now();
 
-                    auto end = std::chrono::high_resolution_clock::now();
-                    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-                    
-                    multi_perf.execution_times_us.push_back(static_cast<double>(duration.count()));
-                    std::cout << " " << duration.count() << "μs" << std::endl;
+            try {
+                size_t result = multi_amx_calc.compute_inner_products(
+                    data_bf16_flat.data(), data_bf16_flat.size() / dim,
+                    centroids_bf16_flat.data(), centroids_bf16_flat.size() / dim,
+                    dim, enhanced_results.data());
 
-                } catch (const std::exception& e) {
-                    std::cout << " FAILED: " << e.what() << std::endl;
-                    multi_perf.success = false;
-                    break;
-                }
+                auto end = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+
+                std::cout << " " << duration.count() << "μs" << std::endl;
+
+                // Store performance metrics
+                multi_perf.execution_times_us.push_back(static_cast<double>(duration.count()));
+                multi_perf.calculate_stats(total_ops);
+                multi_perf.set_speedup(scalar_perf.avg_time_us);
+                multi_perf.success = true;
+
+                // Print comprehensive timing analysis
+                multi_amx_calc.print_comprehensive_timing_stats();
+                multi_amx_calc.print_per_thread_breakdown();
+                multi_amx_calc.print_performance_analysis();
+
+            } catch (const std::exception& e) {
+                std::cout << " FAILED: " << e.what() << std::endl;
+                multi_perf.success = false;
+                enhanced_results_storage.back().clear(); // Clear failed results
             }
-            
-            multi_perf.calculate_stats(total_ops);
-            multi_perf.set_speedup(scalar_perf.avg_time_us);
         }
         
         performance_metrics.push_back(multi_perf);
-        result_idx++;
     }
 
     // ===== ACCURACY ANALYSIS =====
@@ -605,29 +621,30 @@ int main()
         accuracy_metrics["Single AMX (BF16)"] = single_acc;
     }
 
-    // Analyze multithreaded results
-    result_idx = 0;
-    for (const auto& config : thread_configs) {
-        if (result_idx >= multi_results.size()) break;
-        
+    // Analyze enhanced multithreaded results
+    for (size_t config_idx = 0; config_idx < thread_configs.size(); ++config_idx) {
+        const auto& config = thread_configs[config_idx];
         std::string config_name = config.second;
-        auto& perf_metric = performance_metrics[2 + result_idx]; // Skip scalar and single AMX
         
-        if (perf_metric.success) {
-            std::cout << "Analyzing " << config_name << " vs Scalar..." << std::endl;
-            AccuracyMetrics multi_acc(0.001f);
-            multi_acc.analyze(scalar_results, *multi_results[result_idx]);
-            accuracy_metrics[config_name] = multi_acc;
+        // Check if this configuration was successful
+        if (config_idx + 2 < performance_metrics.size() && performance_metrics[config_idx + 2].success) {
+            const std::vector<float>& enhanced_results = enhanced_results_storage[config_idx];
             
-            // Also compare against single AMX for consistency
-            if (single_amx_perf.success) {
-                std::cout << "Analyzing " << config_name << " vs Single AMX..." << std::endl;
-                AccuracyMetrics consistency_acc(1e-6f); // Stricter tolerance for AMX vs AMX
-                consistency_acc.analyze(single_amx_results, *multi_results[result_idx]);
-                accuracy_metrics[config_name + " (vs Single AMX)"] = consistency_acc;
+            if (!enhanced_results.empty()) {
+                std::cout << "Analyzing " << config_name << " vs Scalar..." << std::endl;
+                AccuracyMetrics multi_acc(0.001f);
+                multi_acc.analyze(scalar_results, enhanced_results);
+                accuracy_metrics[config_name] = multi_acc;
+
+                // Also compare against single AMX for consistency
+                if (single_amx_perf.success) {
+                    std::cout << "Analyzing " << config_name << " vs Single AMX..." << std::endl;
+                    AccuracyMetrics consistency_acc(1e-6f); // Stricter tolerance for AMX vs AMX
+                    consistency_acc.analyze(single_amx_results, enhanced_results);
+                    accuracy_metrics[config_name + " (vs Single AMX)"] = consistency_acc;
+                }
             }
         }
-        result_idx++;
     }
 
     // ===== DETAILED TIMING ANALYSIS =====
@@ -640,36 +657,45 @@ int main()
         single_amx_calc.print_timing_stats();
     }
 
-    // Print timing for multithreaded implementations
-    result_idx = 0;
-    for (const auto& config : thread_configs) {
-        if (result_idx >= multi_results.size()) break;
-        
+    // Print timing for enhanced multithreaded implementations
+    for (size_t config_idx = 0; config_idx < thread_configs.size(); ++config_idx) {
+        const auto& config = thread_configs[config_idx];
         size_t num_threads = config.first;
         std::string config_name = config.second;
-        auto& perf_metric = performance_metrics[2 + result_idx];
         
-        if (perf_metric.success) {
+        // Check if this configuration was successful
+        if (config_idx + 2 < performance_metrics.size() && performance_metrics[config_idx + 2].success) {
             std::cout << "\n" << config_name << " Threading Analysis:" << std::endl;
-            
+
             // Calculate threading efficiency
             if (single_amx_perf.success) {
-                double threading_speedup = single_amx_perf.avg_time_us / perf_metric.avg_time_us;
+                const PerformanceMetrics& multi_perf = performance_metrics[config_idx + 2];
+                double threading_speedup = single_amx_perf.avg_time_us / multi_perf.avg_time_us;
                 double efficiency = threading_speedup / num_threads;
-                
-                std::cout << "  Threading speedup vs Single AMX: " << std::fixed << std::setprecision(2) 
+
+                std::cout << "  Threading speedup vs Single AMX: " << std::fixed << std::setprecision(2)
                           << threading_speedup << "x" << std::endl;
-                std::cout << "  Threading efficiency: " << std::setprecision(1) 
+                std::cout << "  Threading efficiency: " << std::setprecision(1)
                           << (efficiency * 100) << "%" << std::endl;
-                
+
                 if (efficiency < 0.5) {
                     std::cout << "  ⚠️  Low efficiency - possible memory bandwidth bottleneck" << std::endl;
                 } else if (efficiency > 0.8) {
                     std::cout << "  ✅ Good threading efficiency" << std::endl;
                 }
             }
+            
+            // Print detailed timing from the enhanced calculator
+            const AMXInnerProductBF16PtrMTEnhanced& calc = *enhanced_calculators[config_idx];
+            std::cout << "\nDetailed timing breakdown for " << config_name << ":" << std::endl;
+            std::cout << "  Total compute time:           " << std::fixed << std::setprecision(3) 
+                      << calc.get_total_compute_time_ms() << " ms" << std::endl;
+            std::cout << "  Thread spawn time:            " << calc.get_thread_spawn_time_ms() << " ms" << std::endl;
+            std::cout << "  Thread join time:             " << calc.get_thread_join_time_ms() << " ms" << std::endl;
+            std::cout << "  Memory allocation time:       " << calc.get_memory_allocation_time_ms() << " ms" << std::endl;
+            std::cout << "  Average thread time:          " << calc.get_avg_thread_time_ms() << " ms" << std::endl;
+            std::cout << "  Average computation time:     " << calc.get_avg_actual_computation_time_ms() << " ms" << std::endl;
         }
-        result_idx++;
     }
 
     // ===== COMPREHENSIVE RESULTS =====
@@ -684,7 +710,7 @@ int main()
     // Find best performing implementation
     double best_throughput = 0.0;
     std::string best_impl = "None";
-    
+
     for (const auto& metric : performance_metrics) {
         if (metric.success && metric.throughput_gflops > best_throughput) {
             best_throughput = metric.throughput_gflops;
@@ -694,19 +720,44 @@ int main()
 
     std::cout << "\nPerformance Analysis:" << std::endl;
     std::cout << "  Best performing implementation: " << best_impl << std::endl;
-    std::cout << "  Peak throughput achieved: " << std::fixed << std::setprecision(2) 
+    std::cout << "  Peak throughput achieved: " << std::fixed << std::setprecision(2)
               << best_throughput << " GFLOPS" << std::endl;
 
     if (single_amx_perf.success) {
-        std::cout << "  Single AMX speedup vs Scalar: " << std::setprecision(2) 
+        std::cout << "  Single AMX speedup vs Scalar: " << std::setprecision(2)
                   << single_amx_perf.speedup_vs_scalar << "x" << std::endl;
     }
 
+    // Enhanced multithreading analysis
+    std::cout << "\nMultithreading Analysis:" << std::endl;
+    if (enhanced_calculators.size() > 0) {
+        for (size_t config_idx = 0; config_idx < thread_configs.size(); ++config_idx) {
+            if (config_idx + 2 < performance_metrics.size() && performance_metrics[config_idx + 2].success) {
+                const auto& config = thread_configs[config_idx];
+                const AMXInnerProductBF16PtrMTEnhanced& calc = *enhanced_calculators[config_idx];
+                
+                double overhead_percentage = ((calc.get_thread_spawn_time_ms() + calc.get_thread_join_time_ms() + 
+                                              calc.get_memory_allocation_time_ms()) / calc.get_total_compute_time_ms()) * 100.0;
+                
+                std::cout << "  " << config.second << ":" << std::endl;
+                std::cout << "    Threading overhead: " << std::setprecision(1) << overhead_percentage << "%" << std::endl;
+                
+                if (overhead_percentage < 5.0) {
+                    std::cout << "    ✅ Excellent threading efficiency" << std::endl;
+                } else if (overhead_percentage < 15.0) {
+                    std::cout << "    ✅ Good threading efficiency" << std::endl;
+                } else {
+                    std::cout << "    ⚠️  High threading overhead" << std::endl;
+                }
+            }
+        }
+    }
+
     // Memory bandwidth analysis
-    size_t total_memory_gb = (data_bf16_flat.size() * sizeof(bfloat16_t) + 
+    size_t total_memory_gb = (data_bf16_flat.size() * sizeof(bfloat16_t) +
                              centroids_bf16_flat.size() * sizeof(bfloat16_t) +
                              result_size * sizeof(float)) / (1024 * 1024 * 1024);
-    
+
     std::cout << "\nMemory Analysis:" << std::endl;
     std::cout << "  Total memory footprint: ~" << total_memory_gb << " GB" << std::endl;
     std::cout << "  Data points memory: " << (data_bf16_flat.size() * sizeof(bfloat16_t) / (1024*1024)) << " MB" << std::endl;
@@ -715,7 +766,7 @@ int main()
 
     // Usage recommendations
     std::cout << "\nUsage Recommendations:" << std::endl;
-    
+
     if (single_amx_perf.success) {
         if (single_amx_perf.speedup_vs_scalar > 5.0) {
             std::cout << "  ✅ AMX provides excellent acceleration for this workload" << std::endl;
@@ -729,7 +780,7 @@ int main()
     // Check if multithreading is beneficial
     bool multithreading_beneficial = false;
     for (const auto& metric : performance_metrics) {
-        if (metric.implementation_name.find("Multi") != std::string::npos && 
+        if (metric.implementation_name.find("Enhanced Multi") != std::string::npos &&
             metric.success && single_amx_perf.success) {
             if (metric.throughput_gflops > single_amx_perf.throughput_gflops * 1.2) {
                 multithreading_beneficial = true;
@@ -740,7 +791,7 @@ int main()
 
     if (multithreading_beneficial) {
         std::cout << "  ✅ Multithreading provides significant benefits for this dataset size" << std::endl;
-        std::cout << "  💡 Consider using multithreaded AMX for large-scale production workloads" << std::endl;
+        std::cout << "  💡 Consider using enhanced multithreaded AMX for large-scale production workloads" << std::endl;
     } else {
         std::cout << "  ℹ️  Single-threaded AMX is sufficient for this workload" << std::endl;
         std::cout << "  💡 Multithreading may help with larger datasets or when CPU is not saturated" << std::endl;
@@ -787,7 +838,7 @@ int main()
     std::cout << "                                 FINAL SUMMARY" << std::endl;
     std::cout << std::string(80, '=') << std::endl;
 
-    std::cout << "Dataset: " << (data_bf16_flat.size()/dim) << " points × " 
+    std::cout << "Dataset: " << (data_bf16_flat.size()/dim) << " points × "
               << (centroids_bf16_flat.size()/dim) << " centroids × " << dim << " dimensions" << std::endl;
     std::cout << "Total operations: " << total_ops << " (≈" << (total_ops / 1e9) << "B ops)" << std::endl;
     std::cout << "Test configuration: " << rounds << " rounds, averaging results" << std::endl;
@@ -798,7 +849,7 @@ int main()
         if (metric.success) successful_implementations++;
     }
 
-    std::cout << "\nImplementation Status: " << successful_implementations << "/" 
+    std::cout << "\nImplementation Status: " << successful_implementations << "/"
               << static_cast<int>(performance_metrics.size()) << " successful" << std::endl;
 
     if (successful_implementations == 0) {
@@ -815,24 +866,25 @@ int main()
     if (successful_implementations > 1) {
         double min_throughput = std::numeric_limits<double>::max();
         double max_throughput = 0.0;
-        
+
         for (const auto& metric : performance_metrics) {
             if (metric.success) {
                 min_throughput = std::min(min_throughput, metric.throughput_gflops);
                 max_throughput = std::max(max_throughput, metric.throughput_gflops);
             }
         }
-        
-        std::cout << "Performance range: " << std::fixed << std::setprecision(2) 
+
+        std::cout << "Performance range: " << std::fixed << std::setprecision(2)
                   << min_throughput << " - " << max_throughput << " GFLOPS" << std::endl;
-        std::cout << "Performance variation: " << std::setprecision(1) 
+        std::cout << "Performance variation: " << std::setprecision(1)
                   << ((max_throughput / min_throughput - 1.0) * 100) << "%" << std::endl;
     }
 
     std::cout << "\n🎯 Testing completed successfully!" << std::endl;
     std::cout << "   Use the results above to select the optimal implementation for your workload." << std::endl;
-    
+
     std::cout << std::string(80, '=') << std::endl;
 
     return 0;
+
 }

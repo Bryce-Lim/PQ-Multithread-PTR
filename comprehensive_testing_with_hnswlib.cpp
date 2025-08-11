@@ -22,8 +22,8 @@ typedef uint16_t bfloat16_t;
 
 // Configuration constants
 const int dim = 1024;             // Embedding dimension - must be multiple of 64 for AMX
-const int max_elements = 10240;   // Maximum number of vectors to load
-const int num_centroids = 16;     // Number of centroids - must be multiple of 16 for AMX
+const int max_elements = 1024000;   // Maximum number of vectors to load
+const int num_centroids = 160;     // Number of centroids - must be multiple of 16 for AMX
 const int rounds = 10;              // Number of test rounds for averaging
 const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
 
