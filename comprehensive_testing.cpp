@@ -1,6 +1,5 @@
 #include "ScalarInnerProduct.h"
 #include "AMXInnerProductBF16Ptr.h"
-#include "AMXInnerProductBF16PtrMT.h"
 #include "AMXInnerProductBF16PtrMTEnhanced.h"
 #include "arrow/api.h"
 #include "arrow/io/api.h"

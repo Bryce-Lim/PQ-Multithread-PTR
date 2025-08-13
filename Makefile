@@ -23,12 +23,11 @@ HNSWLIB_LIBS =
 # Core sources
 SCALAR_SRC = ScalarInnerProduct.cpp
 AMX_SRC = AMXInnerProductBF16Ptr.cpp
-AMX_MT_SRC = AMXInnerProductBF16PtrMT.cpp
 AMX_MT_ENHANCED_SRC = AMXInnerProductBF16PtrMTEnhanced.cpp
 HNSWLIB_SRC = HNSWLIBInnerProductPtr.cpp
 
 # Object files for different configurations
-CORE_OBJS = $(SCALAR_SRC:.cpp=.o) $(AMX_SRC:.cpp=.o) $(AMX_MT_SRC:.cpp=.o) $(AMX_MT_ENHANCED_SRC:.cpp=.o)
+CORE_OBJS = $(SCALAR_SRC:.cpp=.o) $(AMX_SRC:.cpp=.o) $(AMX_MT_ENHANCED_SRC:.cpp=.o)
 HNSWLIB_OBJS = $(CORE_OBJS) $(HNSWLIB_SRC:.cpp=.o)
 
 # Programs
