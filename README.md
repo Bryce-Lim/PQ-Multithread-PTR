@@ -16,12 +16,6 @@ A high-performance implementation of inner product (dot product) computation usi
 - **Accuracy Validation**: Comprehensive accuracy comparison between implementations
 - **Throughput Metrics**: GFLOPS calculations and performance scaling analysis
 
-### Key Optimizations
-- **Memory-optimized Chunking**: Efficient data formatting for AMX tile operations
-- **Prefetching Strategies**: Advanced memory prefetching for improved cache utilization
-- **SIMD Vectorization**: AVX-512 optimized BF16 conversion routines
-- **Load Balancing**: Dynamic work distribution across threads
-
 ## 📋 Requirements
 
 ### Hardware Requirements
