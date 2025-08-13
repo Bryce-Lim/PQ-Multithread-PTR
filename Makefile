@@ -90,12 +90,6 @@ test-large: comprehensive_testing
 	@echo "Features: Enhanced AMX multithreading with detailed timing analysis"
 	LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH ./comprehensive_testing
 
-test-hnswlib: comprehensive_testing_with_hnswlib
-	@echo "=== Running HNSWLIB Comparison Tests ==="
-	@echo "Note: Requires dataset at /mnt/ceph/district9/dataset/openai/openai_large_5m/"
-	@echo "Features: AMX vs HNSWLIB performance comparison"
-	LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH ./comprehensive_testing_with_hnswlib
-
 test-enhanced: comprehensive_testing
 	@echo "=== Running Enhanced AMX Analysis ==="
 	@echo "Note: Focuses on detailed timing breakdown of multithreaded AMX"
@@ -154,8 +148,8 @@ setup: install-deps setup-hnswlib setup-enhanced
 	@echo "✅ All dependencies installed and configured"
 
 help:
-	@echo "AMX Inner Product Project with Enhanced AMX and HNSWLIB"
-	@echo "======================================================="
+	@echo "AMX Inner Product Project with AMX and HNSWLIB"
+	@echo "==============================================="
 	@echo ""
 	@echo "Setup targets:"
 	@echo "  setup            Install all dependencies and setup everything"
@@ -170,8 +164,7 @@ help:
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test             Run basic tests (no dataset required)"
-	@echo "  test-large       Run enhanced large-scale tests (with detailed timing)"
-	@echo "  test-hnswlib     Run HNSWLIB comparison tests"
+	@echo "  test-large       Run enhanced large-scale tests (with detailed timing), compares HNSWLIB and AMX"
 	@echo "  test-enhanced    Run enhanced AMX analysis (detailed breakdown)"
 	@echo "  test-all         Run all tests"
 	@echo ""

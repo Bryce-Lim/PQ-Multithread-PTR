@@ -28,8 +28,9 @@ const int rounds = 10;              // Number of test rounds for averaging
 const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
 
 // Validate AMX constraints
-static_assert(dim % 64 == 0, "Dimension must be multiple of 64 for AMX");
+static_assert(dim % 32 == 0, "Dimension must be multiple of 32 for AMX");
 static_assert(num_centroids % 16 == 0, "Number of centroids must be multiple of 16 for AMX");
+static_assert(max_elements % 16 == 0, "Number of data vectors must be a multiple of 16 for AMX");
 
 // Convert float32 to bfloat16
 static bfloat16_t float_to_bfloat16(float f) {
