@@ -162,7 +162,7 @@ The enhanced implementation provides comprehensive performance metrics:
 
 ### API Reference
 See header files for detailed API documentation:
-- `AMXInnerProductBF16PtrMTEnhanced.h` - Main enhanced implementation
+- `AMXInnerProductBF16PtrMTEnhanced.h` - Main multi-threaded implementation
 - `AMXInnerProductBF16Ptr.h` - Single-threaded version
 - `AMXCommon.h` - Shared constants and types
 
