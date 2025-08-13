@@ -41,7 +41,7 @@ A high-performance implementation of inner product (dot product) computation usi
 
 ## 🛠️ Installation
 
-### Quick Setup
+### Setup
 ```bash
 # Install system dependencies (Ubuntu/Debian)
 sudo apt-get update && sudo apt-get install -y \
@@ -56,21 +56,7 @@ make setup
 make all
 ```
 
-### Manual Setup
-```bash
-# Install Arrow/Parquet libraries
-sudo apt-get install libarrow-dev libparquet-dev
-
-# Clone HNSWLIB (optional)
-git clone https://github.com/nmslib/hnswlib.git
-
-# Build with specific configuration
-make release  # Optimized build
-# or
-make debug    # Debug build with symbols
-```
-
-## 🏃‍♂️ Usage
+## 🏃‍♂️ Running
 
 ### Basic Testing
 ```bash
