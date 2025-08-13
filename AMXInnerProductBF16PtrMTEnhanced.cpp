@@ -217,7 +217,7 @@ void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
                 size_t centroid_chunk_idx = centroid_chunk_row * dim_chunks + dim_chunk_col;
 
                 // Data formatting timing
-                auto data_format_start = std::chrono::high_resolution_clock::now();
+//                auto data_format_start = std::chrono::high_resolution_clock::now();
                 for (size_t i = 0; i < MAX_SIZE; i++) {
                     if (i < actual_data_size) {
                         size_t global_point_idx = data_start + point_idx + i;
@@ -232,11 +232,11 @@ void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
                         memset(&data_chunk[i * MAX_COLS], 0, MAX_COLS * sizeof(bfloat16_t));
                     }
                 }
-                auto data_format_end = std::chrono::high_resolution_clock::now();
-                timing.data_formatting_time += data_format_end - data_format_start;
+//                auto data_format_end = std::chrono::high_resolution_clock::now();
+//                timing.data_formatting_time += data_format_end - data_format_start;
 
                 // Tile loading timing
-                auto tile_load_start = std::chrono::high_resolution_clock::now();
+//                auto tile_load_start = std::chrono::high_resolution_clock::now();
                 if (d_offset == 0) {
                     _tile_zero(1);
                 } else {
@@ -245,23 +245,23 @@ void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
 
                 _tile_loadd(2, centroid_chunks + (MAX_SIZE * MAX_COLS * centroid_chunk_idx), STRIDE);
                 _tile_loadd(3, data_chunk, STRIDE);
-                auto tile_load_end = std::chrono::high_resolution_clock::now();
-                timing.tile_loading_time += tile_load_end - tile_load_start;
+//                auto tile_load_end = std::chrono::high_resolution_clock::now();
+//                timing.tile_loading_time += tile_load_end - tile_load_start;
                 
                 local_tile_loads += 3;
 
                 // Actual computation timing
-                auto computation_start = std::chrono::high_resolution_clock::now();
+//                auto computation_start = std::chrono::high_resolution_clock::now();
                 _tile_dpbf16ps(1, 3, 2);
                 _tile_stored(1, results_chunk, STRIDE);
-                auto computation_end = std::chrono::high_resolution_clock::now();
-                timing.actual_computation_time += computation_end - computation_start;
+//                auto computation_end = std::chrono::high_resolution_clock::now();
+//                timing.actual_computation_time += computation_end - computation_start;
                 
                 local_computations++;
             }
 
             // Result merging timing
-            auto merge_start = std::chrono::high_resolution_clock::now();
+//            auto merge_start = std::chrono::high_resolution_clock::now();
             for (size_t i = 0; i < actual_data_size; ++i) {
                 size_t global_point_idx = data_start + point_idx + i;
 
@@ -273,8 +273,8 @@ void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
                     distances[distance_idx] = results_chunk[result_idx];
                 }
             }
-            auto merge_end = std::chrono::high_resolution_clock::now();
-            timing.result_merging_time += merge_end - merge_start;
+//            auto merge_end = std::chrono::high_resolution_clock::now();
+//            timing.result_merging_time += merge_end - merge_start;
         }
     }
 
@@ -392,11 +392,23 @@ void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
               << std::string(8, '-') << "  "
               << std::string(6, '-') << std::endl;
 
-    std::cout << std::fixed << std::setprecision(1);
+    std::cout << std::fixed << std::setprecision(3);
+    
+    // Calculate averages while printing individual threads
+    double avg_total_time = 0.0;
+    double avg_init_time = 0.0;
+    double avg_format_time = 0.0;
+    double avg_data_format_time = 0.0;
+    double avg_tile_load_time = 0.0;
+    double avg_compute_time = 0.0;
+    double avg_merge_time = 0.0;
+    double avg_points_processed = 0.0;
+    double avg_ops = 0.0;
     
     for (size_t i = 0; i < thread_timings.size(); ++i) {
         const ThreadTiming& timing = thread_timings[i];
         
+        // Print individual thread data
         std::cout << std::left << std::setw(6) << i
                   << std::right
                   << std::setw(8) << (timing.total_thread_time.count() * 1000.0) << "ms "
@@ -408,7 +420,55 @@ void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
                   << std::setw(10) << (timing.result_merging_time.count() * 1000.0) << "ms "
                   << std::setw(7) << timing.data_points_processed << "    "
                   << std::setw(5) << timing.total_amx_operations << std::endl;
+        
+        // Accumulate for averages
+        avg_total_time += timing.total_thread_time.count() * 1000.0;
+        avg_init_time += timing.thread_init_time.count() * 1000.0;
+        avg_format_time += timing.centroid_formatting_time.count() * 1000.0;
+        avg_data_format_time += timing.data_formatting_time.count() * 1000.0;
+        avg_tile_load_time += timing.tile_loading_time.count() * 1000.0;
+        avg_compute_time += timing.actual_computation_time.count() * 1000.0;
+        avg_merge_time += timing.result_merging_time.count() * 1000.0;
+        avg_points_processed += static_cast<double>(timing.data_points_processed);
+        avg_ops += static_cast<double>(timing.total_amx_operations);
     }
+    
+    // Calculate averages
+    size_t num_threads = thread_timings.size();
+    avg_total_time /= num_threads;
+    avg_init_time /= num_threads;
+    avg_format_time /= num_threads;
+    avg_data_format_time /= num_threads;
+    avg_tile_load_time /= num_threads;
+    avg_compute_time /= num_threads;
+    avg_merge_time /= num_threads;
+    avg_points_processed /= num_threads;
+    avg_ops /= num_threads;
+    
+    // Print separator line for average
+    std::cout << std::string(8, '-') << " "
+              << std::string(8, '-') << "  "
+              << std::string(7, '-') << "  "
+              << std::string(8, '-') << "  "
+              << std::string(10, '-') << "  "
+              << std::string(9, '-') << "  "
+              << std::string(9, '-') << "  "
+              << std::string(9, '-') << "  "
+              << std::string(8, '-') << "  "
+              << std::string(6, '-') << std::endl;
+    
+    // Print average row
+    std::cout << std::left << std::setw(6) << "AVG"
+              << std::right
+              << std::setw(8) << avg_total_time << "ms "
+              << std::setw(6) << avg_init_time << "ms "
+              << std::setw(8) << avg_format_time << "ms "
+              << std::setw(8) << avg_data_format_time << "ms "
+              << std::setw(8) << avg_tile_load_time << "ms "
+              << std::setw(8) << avg_compute_time << "ms "
+              << std::setw(10) << avg_merge_time << "ms "
+              << std::setw(7) << static_cast<size_t>(avg_points_processed) << "    "
+              << std::setw(5) << static_cast<size_t>(avg_ops) << std::endl;
 
     std::cout << std::string(100, '=') << std::endl;
 }

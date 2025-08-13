@@ -22,7 +22,7 @@ typedef uint16_t bfloat16_t;
 
 // Configuration constants
 const int dim = 1024;             // Embedding dimension - must be multiple of 64 for AMX
-const int max_elements = 1003520;   // Maximum number of vectors to load
+const int max_elements = 102400;   // Maximum number of vectors to load
 const int num_centroids = 16;     // Number of centroids - must be multiple of 16 for AMX
 const int rounds = 10;              // Number of test rounds for averaging
 const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
@@ -335,7 +335,6 @@ int main()
     std::cout << "AMX Constraint Check:" << std::endl;
     std::cout << "  Dimension divisible by 64: " << (dim % 64 == 0 ? "✅" : "❌") << std::endl;
     std::cout << "  Centroids divisible by 16: " << (num_centroids % 16 == 0 ? "✅" : "❌") << std::endl;
-    std::cout << "  Max elements divisible by 32: " << (max_elements % 32 == 0 ? "✅" : "❌") << std::endl << std::endl;
 
     // Data loading and preparation
     auto init_start = std::chrono::high_resolution_clock::now();
@@ -487,10 +486,10 @@ int main()
 
     // Test different thread configurations
     std::vector<std::pair<int, std::string>> hnswlib_configs = {
-        {1, "HNSWLIB (1 thread)"},
-        {4, "HNSWLIB (4 threads)"},
-        {8, "HNSWLIB (8 threads)"},
-        {224, "HNSWLIB (224 threads)"}
+        {56, "HNSWLIB (56 threads)"},
+        {84, "HNSWLIB (84 threads)"},
+        {112, "HNSWLIB (112 threads)"},
+	{224, "HNSWLIB (224 threads)"}
     };
 
     std::vector<std::vector<float>*> hnswlib_result_arrays = {
@@ -599,8 +598,8 @@ int main()
     std::cout << "MULTI-THREADED AMX COMPUTATION" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
 
-    PerformanceMetrics multi_amx_perf("Multi AMX (28 threads)");
-    AMXInnerProductBF16PtrMTEnhanced multi_amx_calc(28);
+    PerformanceMetrics multi_amx_perf("Multi AMX (32 threads)");
+    AMXInnerProductBF16PtrMTEnhanced multi_amx_calc(32);
 
     if (!multi_amx_calc.initialize()) {
         std::cout << "❌ Multi-threaded AMX initialization failed!" << std::endl;
