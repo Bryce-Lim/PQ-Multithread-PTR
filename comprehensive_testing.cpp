@@ -19,11 +19,12 @@
 
 typedef uint16_t bfloat16_t;
 
-// Configuration constants
-const int dim = 1024;             // Embedding dimension - must be multiple of 64 for AMX
-const int max_elements = 10240;   // Maximum number of vectors to load (increased for larger scale)
+// ==================== Configuration Constants ====================
+
+const int dim = 1024;              // Embedding dimension - must be multiple of 64 for AMX
+const int max_elements = 10240;    // Maximum number of vectors to load (increased for larger scale)
 const int num_centroids = 160;     // Number of centroids - must be multiple of 16 for AMX
-const int rounds = 10;              // Number of test rounds for averaging
+const int rounds = 10;             // Number of test rounds for averaging
 const std::string dataroot = "/mnt/ceph/district9/dataset/openai/openai_large_5m/";
 
 // Validate AMX constraints
@@ -31,7 +32,11 @@ static_assert(dim % 32 == 0, "Dimension must be multiple of 32 for AMX");
 static_assert(num_centroids % 16 == 0, "Number of centroids must be multiple of 16 for AMX");
 static_assert(max_elements % 16 == 0, "Number of data vectors must be a multiple of 16 for AMX");
 
-// Convert float32 to bfloat16
+// ==================== Data Type Conversion ====================
+
+/**
+ * @brief Convert float32 to bfloat16 with proper rounding
+ */
 static bfloat16_t float_to_bfloat16(float f) {
     uint32_t bits;
     std::memcpy(&bits, &f, sizeof(float));
@@ -39,7 +44,9 @@ static bfloat16_t float_to_bfloat16(float f) {
     return static_cast<bfloat16_t>((bits + rounding_bias) >> 16);
 }
 
-// Convert bfloat16 to float32
+/**
+ * @brief Convert bfloat16 to float32
+ */
 static float bfloat16_to_float(bfloat16_t bf16) {
     uint32_t f32_bits = static_cast<uint32_t>(bf16) << 16;
     float result;
@@ -47,7 +54,11 @@ static float bfloat16_to_float(bfloat16_t bf16) {
     return result;
 }
 
-// Performance metrics structure
+// ==================== Performance Metrics ====================
+
+/**
+ * @brief Performance metrics structure for tracking execution statistics
+ */
 struct PerformanceMetrics {
     std::string implementation_name;
     std::vector<double> execution_times_us;  // Microseconds
@@ -59,7 +70,8 @@ struct PerformanceMetrics {
     double speedup_vs_scalar;
     bool success;
     
-    PerformanceMetrics(const std::string& name) : implementation_name(name), success(false) {}
+    explicit PerformanceMetrics(const std::string& name) 
+        : implementation_name(name), success(false) {}
     
     void calculate_stats(long long total_ops) {
         if (execution_times_us.empty()) {
@@ -79,7 +91,7 @@ struct PerformanceMetrics {
         }
         std_dev_us = std::sqrt(variance / execution_times_us.size());
         
-        // Calculate throughput (GFLOPS)
+        // Calculate throughput (GFLOPS) - multiply-add operations
         throughput_gflops = (total_ops * 2.0) / (avg_time_us * 1e-6) / 1e9;
     }
     
@@ -88,7 +100,9 @@ struct PerformanceMetrics {
     }
 };
 
-// Accuracy analysis structure
+/**
+ * @brief Accuracy analysis structure for validation
+ */
 struct AccuracyMetrics {
     float max_abs_diff;
     float avg_abs_diff;
@@ -97,7 +111,7 @@ struct AccuracyMetrics {
     float tolerance;
     bool acceptable;
     
-    AccuracyMetrics(float tol = 0.001f) : tolerance(tol), acceptable(false) {}
+    explicit AccuracyMetrics(float tol = 0.001f) : tolerance(tol), acceptable(false) {}
     
     void analyze(const std::vector<float>& reference, const std::vector<float>& comparison) {
         if (reference.size() != comparison.size()) {
@@ -138,7 +152,11 @@ struct AccuracyMetrics {
     }
 };
 
-// Load data from parquet files with Arrow 21 compatibility
+// ==================== Data Loading ====================
+
+/**
+ * @brief Load embedding data from parquet files with Arrow 21 compatibility
+ */
 std::vector<std::vector<float>> load_parquet_data(const std::string& dataroot, int max_elements, int dim) {
     std::vector<std::vector<float>> data_float;
     data_float.reserve(static_cast<size_t>(max_elements));
@@ -163,7 +181,7 @@ std::vector<std::vector<float>> load_parquet_data(const std::string& dataroot, i
         
         std::shared_ptr<arrow::io::ReadableFile> input = maybe_input.ValueOrDie();
 
-        // Create parquet reader - Updated for Arrow 21
+        // Create parquet reader
         arrow::Result<std::unique_ptr<parquet::arrow::FileReader>> maybe_reader = 
             parquet::arrow::OpenFile(input, arrow::default_memory_pool());
         
@@ -174,7 +192,7 @@ std::vector<std::vector<float>> load_parquet_data(const std::string& dataroot, i
         
         std::unique_ptr<parquet::arrow::FileReader> arrow_reader = std::move(maybe_reader).ValueOrDie();
 
-        // Read table - Updated for Arrow 21
+        // Read table
         std::shared_ptr<arrow::Table> table;
         arrow::Status status = arrow_reader->ReadTable(&table);
         if (!status.ok()) {
@@ -193,20 +211,16 @@ std::vector<std::vector<float>> load_parquet_data(const std::string& dataroot, i
         
         for (int chunk_idx = 0; chunk_idx < emb_col->num_chunks(); ++chunk_idx) {
             std::shared_ptr<arrow::Array> chunk = emb_col->chunk(chunk_idx);
-            
-            // Cast to ListArray
             auto list_array = std::static_pointer_cast<arrow::ListArray>(chunk);
-            
-            // Get values array
             std::shared_ptr<arrow::Array> values_array = list_array->values();
             
-            // Cast to appropriate numeric type (try DoubleArray first, then FloatArray)
+            // Handle both double and float arrays
             auto double_array = std::dynamic_pointer_cast<arrow::DoubleArray>(values_array);
             auto float_array = std::dynamic_pointer_cast<arrow::FloatArray>(values_array);
             
             if (double_array) {
-                // Process as double array
-                for (int64_t i = 0; i < std::min(static_cast<int64_t>(partition_size), list_array->length()) && static_cast<int>(data_float.size()) < max_elements; i++) {
+                for (int64_t i = 0; i < std::min(static_cast<int64_t>(partition_size), list_array->length()) 
+                     && static_cast<int>(data_float.size()) < max_elements; i++) {
                     if (list_array->IsValid(i)) {
                         std::vector<float> vec(static_cast<size_t>(dim));
                         for (int j = 0; j < dim; j++) {
@@ -217,8 +231,8 @@ std::vector<std::vector<float>> load_parquet_data(const std::string& dataroot, i
                     }
                 }
             } else if (float_array) {
-                // Process as float array  
-                for (int64_t i = 0; i < std::min(static_cast<int64_t>(partition_size), list_array->length()) && static_cast<int>(data_float.size()) < max_elements; i++) {
+                for (int64_t i = 0; i < std::min(static_cast<int64_t>(partition_size), list_array->length()) 
+                     && static_cast<int>(data_float.size()) < max_elements; i++) {
                     if (list_array->IsValid(i)) {
                         std::vector<float> vec(static_cast<size_t>(dim));
                         for (int j = 0; j < dim; j++) {
@@ -242,12 +256,17 @@ std::vector<std::vector<float>> load_parquet_data(const std::string& dataroot, i
     return data_float;
 }
 
-// Print performance summary table
+// ==================== Output Functions ====================
+
+/**
+ * @brief Print performance comparison table
+ */
 void print_performance_table(const std::vector<PerformanceMetrics>& metrics, long long total_ops) {
     std::cout << "\n" << std::string(120, '=') << std::endl;
     std::cout << "                                    PERFORMANCE COMPARISON" << std::endl;
     std::cout << std::string(120, '=') << std::endl;
     
+    // Table header
     std::cout << std::left 
               << std::setw(25) << "Implementation"
               << std::setw(12) << "Avg Time"
@@ -267,6 +286,7 @@ void print_performance_table(const std::vector<PerformanceMetrics>& metrics, lon
               << std::string(9, '-') << " "
               << std::string(7, '-') << std::endl;
     
+    // Table rows
     for (const auto& metric : metrics) {
         if (!metric.success) {
             std::cout << std::left << std::setw(25) << metric.implementation_name
@@ -289,12 +309,15 @@ void print_performance_table(const std::vector<PerformanceMetrics>& metrics, lon
     std::cout << std::string(120, '=') << std::endl;
 }
 
-// Print accuracy summary table
+/**
+ * @brief Print accuracy analysis table
+ */
 void print_accuracy_table(const std::map<std::string, AccuracyMetrics>& accuracy_map) {
     std::cout << "\n" << std::string(100, '=') << std::endl;
     std::cout << "                                ACCURACY ANALYSIS" << std::endl;
     std::cout << std::string(100, '=') << std::endl;
     
+    // Table header
     std::cout << std::left 
               << std::setw(25) << "Implementation"
               << std::setw(15) << "Max Abs Diff"
@@ -310,6 +333,7 @@ void print_accuracy_table(const std::map<std::string, AccuracyMetrics>& accuracy
               << std::string(11, '-') << " "
               << std::string(7, '-') << std::endl;
     
+    // Table rows
     for (const auto& pair : accuracy_map) {
         const std::string& name = pair.first;
         const AccuracyMetrics& acc = pair.second;
@@ -327,8 +351,9 @@ void print_accuracy_table(const std::map<std::string, AccuracyMetrics>& accuracy
     std::cout << std::string(100, '=') << std::endl;
 }
 
-int main()
-{
+// ==================== Main Program ====================
+
+int main() {
     std::cout << "Comprehensive Large-Scale Implementation Comparison" << std::endl;
     std::cout << "==================================================" << std::endl;
     std::cout << "Configuration:" << std::endl;
@@ -341,11 +366,12 @@ int main()
 
     // Verify AMX constraints
     std::cout << "AMX Constraint Check:" << std::endl;
-    std::cout << "  Dimension divisible by 64: " << (dim % 64 == 0 ? "✅" : "❌") << std::endl;
+    std::cout << "  Dimension divisible by 32: " << (dim % 32 == 0 ? "✅" : "❌") << std::endl;
     std::cout << "  Centroids divisible by 16: " << (num_centroids % 16 == 0 ? "✅" : "❌") << std::endl;
-    std::cout << "  Max elements divisible by 32: " << (max_elements % 32 == 0 ? "✅" : "❌") << std::endl << std::endl;
+    std::cout << "  Max elements divisible by 16: " << (max_elements % 16 == 0 ? "✅" : "❌") << std::endl << std::endl;
 
-    // Data loading and preparation
+    // ==================== Data Loading and Preparation ====================
+    
     auto init_start = std::chrono::high_resolution_clock::now();
 
     std::vector<std::vector<float>> data_float = load_parquet_data(dataroot, max_elements, dim);
@@ -447,15 +473,13 @@ int main()
     size_t result_size = (data_bf16_flat.size() / dim) * (centroids_bf16_flat.size() / dim);
     std::vector<float> scalar_results(result_size);
     std::vector<float> single_amx_results(result_size);
-    std::vector<float> multi_amx_results_2t(result_size);
-    std::vector<float> multi_amx_results_4t(result_size);
-    std::vector<float> multi_amx_results_max(result_size);
 
-    // Performance tracking
+    // Performance and accuracy tracking
     std::vector<PerformanceMetrics> performance_metrics;
     std::map<std::string, AccuracyMetrics> accuracy_metrics;
 
-    // ===== SCALAR COMPUTATION =====
+    // ==================== Scalar Computation ====================
+    
     std::cout << std::string(60, '=') << std::endl;
     std::cout << "SCALAR COMPUTATION" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
@@ -479,10 +503,11 @@ int main()
     }
     
     scalar_perf.calculate_stats(total_ops);
-    scalar_perf.speedup_vs_scalar = 1.0; // Reference
+    scalar_perf.speedup_vs_scalar = 1.0; // Reference implementation
     performance_metrics.push_back(scalar_perf);
 
-    // ===== SINGLE-THREADED AMX COMPUTATION =====
+    // ==================== Single-Threaded AMX Computation ====================
+    
     std::cout << "\n" << std::string(60, '=') << std::endl;
     std::cout << "SINGLE-THREADED AMX COMPUTATION" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
@@ -527,12 +552,13 @@ int main()
     
     performance_metrics.push_back(single_amx_perf);
 
-    // ===== ENHANCED MULTI-THREADED AMX COMPUTATION =====
+    // ==================== Enhanced Multi-Threaded AMX Computation ====================
+    
     std::cout << "\n" << std::string(60, '=') << std::endl;
     std::cout << "ENHANCED MULTI-THREADED AMX COMPUTATION" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
 
-    // Test different thread counts with enhanced timing
+    // Test different thread configurations
     std::vector<std::pair<size_t, std::string>> thread_configs = {
         {2, "Enhanced Multi AMX (2 threads)"},
         {8, "Enhanced Multi AMX (8 threads)"},
@@ -540,7 +566,7 @@ int main()
         {112, "Enhanced Multi AMX (112 threads)"}
     };
 
-    // Store results for each enhanced configuration
+    // Store results and calculators for each configuration
     std::vector<std::vector<float>> enhanced_results_storage;
     std::vector<std::unique_ptr<AMXInnerProductBF16PtrMTEnhanced>> enhanced_calculators;
     
@@ -557,8 +583,8 @@ int main()
         PerformanceMetrics multi_perf(config_name);
         
         // Create calculator and store it for later timing analysis
-	enhanced_calculators.emplace_back(std::make_unique<AMXInnerProductBF16PtrMTEnhanced>(num_threads));
-	AMXInnerProductBF16PtrMTEnhanced& multi_amx_calc = *enhanced_calculators.back();
+        enhanced_calculators.emplace_back(std::make_unique<AMXInnerProductBF16PtrMTEnhanced>(num_threads));
+        AMXInnerProductBF16PtrMTEnhanced& multi_amx_calc = *enhanced_calculators.back();
 
         if (!multi_amx_calc.initialize()) {
             std::cout << "❌ Enhanced multi-threaded AMX initialization failed" << std::endl;
@@ -608,7 +634,8 @@ int main()
         performance_metrics.push_back(multi_perf);
     }
 
-    // ===== ACCURACY ANALYSIS =====
+    // ==================== Accuracy Analysis ====================
+    
     std::cout << "\n" << std::string(60, '=') << std::endl;
     std::cout << "ACCURACY ANALYSIS" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
@@ -647,7 +674,8 @@ int main()
         }
     }
 
-    // ===== DETAILED TIMING ANALYSIS =====
+    // ==================== Detailed Timing Analysis ====================
+    
     std::cout << "\n" << std::string(60, '=') << std::endl;
     std::cout << "DETAILED TIMING ANALYSIS" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
@@ -698,11 +726,13 @@ int main()
         }
     }
 
-    // ===== COMPREHENSIVE RESULTS =====
+    // ==================== Comprehensive Results ====================
+    
     print_performance_table(performance_metrics, total_ops);
     print_accuracy_table(accuracy_metrics);
 
-    // ===== RECOMMENDATIONS =====
+    // ==================== Recommendations ====================
+    
     std::cout << "\n" << std::string(80, '=') << std::endl;
     std::cout << "                                RECOMMENDATIONS" << std::endl;
     std::cout << std::string(80, '=') << std::endl;
@@ -752,7 +782,7 @@ int main()
         }
     }
 
-    // Accuracy recommendations
+    // Accuracy assessment
     bool accuracy_concerns = false;
     for (const auto& pair : accuracy_metrics) {
         if (!pair.second.acceptable) {
@@ -770,7 +800,8 @@ int main()
         std::cout << "\n✅ All implementations meet accuracy requirements" << std::endl;
     }
 
-    // ===== FINAL SUMMARY =====
+    // ==================== Final Summary ====================
+    
     std::cout << "\n" << std::string(80, '=') << std::endl;
     std::cout << "                                 FINAL SUMMARY" << std::endl;
     std::cout << std::string(80, '=') << std::endl;
@@ -823,5 +854,4 @@ int main()
     std::cout << std::string(80, '=') << std::endl;
 
     return 0;
-
 }

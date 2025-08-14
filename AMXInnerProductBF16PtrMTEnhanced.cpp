@@ -14,39 +14,46 @@
 #include <mutex>
 #include <atomic>
 
-// Enhanced-specific thread-local storage to avoid conflicts
 namespace {
+    // Enhanced-specific thread-local storage to avoid conflicts
     thread_local bool enhanced_thread_amx_initialized = false;
     thread_local __tilecfg enhanced_thread_tile_config = {0};
 }
 
+// ==================== Constructor/Destructor ====================
+
 AMXInnerProductBF16PtrMTEnhanced::AMXInnerProductBF16PtrMTEnhanced(size_t num_threads)
-    : amx_initialized(false), num_threads(num_threads)
-{
+    : amx_initialized(false), num_threads(num_threads) {
+    
     if (this->num_threads == 0) {
         this->num_threads = std::thread::hardware_concurrency();
-        if (this->num_threads == 0) this->num_threads = 1;
+        if (this->num_threads == 0) {
+            this->num_threads = 1;
+        }
     }
+    
+    // Cap maximum threads for stability
     this->num_threads = std::min(this->num_threads, static_cast<size_t>(32));
     reset_timers();
 }
 
-AMXInnerProductBF16PtrMTEnhanced::~AMXInnerProductBF16PtrMTEnhanced()
-{
+AMXInnerProductBF16PtrMTEnhanced::~AMXInnerProductBF16PtrMTEnhanced() {
     if (enhanced_thread_amx_initialized) {
         _tile_release();
         enhanced_thread_amx_initialized = false;
     }
 }
 
-bool AMXInnerProductBF16PtrMTEnhanced::initialize()
-{
+// ==================== Initialization ====================
+
+bool AMXInnerProductBF16PtrMTEnhanced::initialize() {
     auto start_init = std::chrono::high_resolution_clock::now();
     
     if (syscall(SYS_arch_prctl, ARCH_REQ_XCOMP_PERM, XFEATURE_XTILEDATA)) {
         amx_initialized = false;
         return false;
     }
+    
     amx_initialized = true;
     
     auto end_init = std::chrono::high_resolution_clock::now();
@@ -55,9 +62,10 @@ bool AMXInnerProductBF16PtrMTEnhanced::initialize()
     return true;
 }
 
-bool AMXInnerProductBF16PtrMTEnhanced::initialize_thread_amx_enhanced()
-{
-    if (enhanced_thread_amx_initialized) return true;
+bool AMXInnerProductBF16PtrMTEnhanced::initialize_thread_amx_enhanced() {
+    if (enhanced_thread_amx_initialized) {
+        return true;
+    }
 
     if (syscall(SYS_arch_prctl, ARCH_REQ_XCOMP_PERM, XFEATURE_XTILEDATA)) {
         return false;
@@ -68,14 +76,15 @@ bool AMXInnerProductBF16PtrMTEnhanced::initialize_thread_amx_enhanced()
     return true;
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::init_thread_tile_config_enhanced(__tilecfg *tileinfo)
-{
+void AMXInnerProductBF16PtrMTEnhanced::init_thread_tile_config_enhanced(__tilecfg* tileinfo) {
     tileinfo->palette_id = 1;
     tileinfo->start_row = 0;
 
+    // Tile 0: accumulator (float32)
     tileinfo->colsb[0] = MAX_SIZE * sizeof(float);
     tileinfo->rows[0] = MAX_SIZE;
 
+    // Tiles 1-3: bfloat16 operands
     for (int i = 1; i < 4; ++i) {
         tileinfo->colsb[i] = MAX_COLS * sizeof(bfloat16_t);
         tileinfo->rows[i] = MAX_SIZE;
@@ -84,13 +93,16 @@ void AMXInnerProductBF16PtrMTEnhanced::init_thread_tile_config_enhanced(__tilecf
     _tile_loadconfig(tileinfo);
 }
 
+// ==================== Main Computation Interface ====================
+
 size_t AMXInnerProductBF16PtrMTEnhanced::compute_inner_products(
     const bfloat16_t* data_points, size_t data_count,
     const bfloat16_t* centroids, size_t centroid_count,
-    size_t dimension, float* distances)
-{
+    size_t dimension, float* distances) {
+    
     auto start_total = std::chrono::high_resolution_clock::now();
 
+    // Validate inputs
     if (!amx_initialized) {
         throw std::runtime_error("AMX not initialized");
     }
@@ -98,26 +110,29 @@ size_t AMXInnerProductBF16PtrMTEnhanced::compute_inner_products(
         return 0;
     }
 
-    // Memory allocation timing
+    // Memory allocation and initialization
     auto start_memory = std::chrono::high_resolution_clock::now();
     memset(distances, 0, data_count * centroid_count * sizeof(float));
     
     // Prepare per-thread timing collection
     thread_timings.clear();
     thread_timings.resize(num_threads);
+    
     auto end_memory = std::chrono::high_resolution_clock::now();
     memory_allocation_time += end_memory - start_memory;
 
-    // Data partitioning
+    // Calculate data partitioning
     size_t chunk_size = (data_count + num_threads - 1) / num_threads;
     std::vector<std::thread> threads;
     
-    // Thread spawning timing
+    // Spawn worker threads
     auto start_spawn = std::chrono::high_resolution_clock::now();
     
     for (size_t t = 0; t < num_threads; ++t) {
         size_t start = t * chunk_size;
-        if (start >= data_count) break;
+        if (start >= data_count) {
+            break;
+        }
 
         size_t end = std::min(start + chunk_size, data_count);
 
@@ -129,7 +144,7 @@ size_t AMXInnerProductBF16PtrMTEnhanced::compute_inner_products(
     auto end_spawn = std::chrono::high_resolution_clock::now();
     thread_spawn_time += end_spawn - start_spawn;
 
-    // Thread joining timing
+    // Wait for completion
     auto start_join = std::chrono::high_resolution_clock::now();
     for (auto& thread : threads) {
         thread.join();
@@ -143,6 +158,8 @@ size_t AMXInnerProductBF16PtrMTEnhanced::compute_inner_products(
     return data_count * centroid_count;
 }
 
+// ==================== Worker Thread Implementation ====================
+
 void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
     const bfloat16_t* data_points,
     const bfloat16_t* centroids,
@@ -151,16 +168,16 @@ void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
     float* distances,
     size_t data_start,
     size_t data_end,
-    size_t thread_id)
-{
+    size_t thread_id) {
+    
     auto thread_start = std::chrono::high_resolution_clock::now();
     
     // Initialize thread timing
     ThreadTiming& timing = thread_timings[thread_id];
-    timing = {};
+    timing = ThreadTiming();
     timing.data_points_processed = data_end - data_start;
     
-    // Thread AMX initialization timing
+    // Thread AMX initialization
     auto init_start = std::chrono::high_resolution_clock::now();
     if (!initialize_thread_amx_enhanced()) {
         std::cerr << "Enhanced thread " << thread_id << " failed to initialize AMX" << std::endl;
@@ -170,109 +187,69 @@ void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
     timing.thread_init_time = init_end - init_start;
 
     // Allocate working memory
-    bfloat16_t* centroid_chunks = new bfloat16_t[centroid_count * dimension];
-    bfloat16_t* data_chunk = new bfloat16_t[MAX_SIZE * MAX_COLS];
-    float* results_chunk = new float[MAX_SIZE * MAX_SIZE];
+    std::unique_ptr<bfloat16_t[]> centroid_chunks(new bfloat16_t[centroid_count * dimension]);
+    std::unique_ptr<bfloat16_t[]> data_chunk(new bfloat16_t[MAX_SIZE * MAX_COLS]);
+    std::unique_ptr<float[]> results_chunk(new float[MAX_SIZE * MAX_SIZE]);
 
-    // Centroid formatting timing
+    // Centroid formatting
     auto format_start = std::chrono::high_resolution_clock::now();
-    for (size_t centroid_offset = 0; centroid_offset < centroid_count / MAX_SIZE; centroid_offset++) {
-        for (size_t d_offset = 0; d_offset < dimension / MAX_COLS; d_offset++) {
-            size_t k = 0;
-            size_t chunk_idx = centroid_offset * (dimension / MAX_COLS) + d_offset;
-
-            for (size_t i = 0; i < MAX_COLS; i += 2) {
-                for (size_t j = 0; j < MAX_SIZE; j++) {
-                    size_t centroid_idx = centroid_offset * MAX_SIZE + j;
-                    size_t dim_idx = d_offset * MAX_COLS + i;
-
-                    centroid_chunks[chunk_idx * MAX_COLS * MAX_SIZE + k] =
-                        centroids[centroid_idx * dimension + dim_idx];
-                    k++;
-                    centroid_chunks[chunk_idx * MAX_COLS * MAX_SIZE + k] =
-                        centroids[centroid_idx * dimension + dim_idx + 1];
-                    k++;
-                }
-            }
-        }
-    }
+    format_centroids_for_amx(centroid_chunks.get(), centroids, centroid_count, dimension);
     auto format_end = std::chrono::high_resolution_clock::now();
     timing.centroid_formatting_time = format_end - format_start;
 
+    // Main computation loop
     size_t dim_chunks = (dimension + MAX_COLS - 1) / MAX_COLS;
     size_t thread_data_count = data_end - data_start;
     size_t local_tile_loads = 0;
     size_t local_computations = 0;
 
-    // Main computation loop with detailed timing
     for (size_t point_idx = 0; point_idx < thread_data_count; point_idx += MAX_SIZE) {
-        size_t actual_data_size = std::min((size_t)MAX_SIZE, thread_data_count - point_idx);
+        size_t actual_data_size = std::min(static_cast<size_t>(MAX_SIZE), thread_data_count - point_idx);
 
         for (size_t centroid_offset = 0; centroid_offset < centroid_count; centroid_offset += MAX_SIZE) {
-            size_t actual_centroid_size = std::min((size_t)MAX_SIZE, centroid_count - centroid_offset);
+            size_t actual_centroid_size = std::min(static_cast<size_t>(MAX_SIZE), centroid_count - centroid_offset);
 
             for (size_t d_offset = 0; d_offset < dimension; d_offset += MAX_COLS) {
                 size_t centroid_chunk_row = centroid_offset / MAX_SIZE;
                 size_t dim_chunk_col = d_offset / MAX_COLS;
                 size_t centroid_chunk_idx = centroid_chunk_row * dim_chunks + dim_chunk_col;
 
-                // Data formatting timing
+                // Data formatting
 //                auto data_format_start = std::chrono::high_resolution_clock::now();
-                for (size_t i = 0; i < MAX_SIZE; i++) {
-                    if (i < actual_data_size) {
-                        size_t global_point_idx = data_start + point_idx + i;
-                        const bfloat16_t* src = &data_points[global_point_idx * dimension + d_offset];
-                        bfloat16_t* dst = &data_chunk[i * MAX_COLS];
-
-                        for (size_t j = 0; j < MAX_COLS; j += 32) {
-                            __m512i vec = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(src + j));
-                            _mm512_storeu_si512(reinterpret_cast<__m512i*>(dst + j), vec);
-                        }
-                    } else {
-                        memset(&data_chunk[i * MAX_COLS], 0, MAX_COLS * sizeof(bfloat16_t));
-                    }
-                }
+                format_data_chunk(data_chunk.get(), data_points, actual_data_size, dimension, 
+                                data_start + point_idx, d_offset);
 //                auto data_format_end = std::chrono::high_resolution_clock::now();
 //                timing.data_formatting_time += data_format_end - data_format_start;
 
-                // Tile loading timing
+                // Tile operations
 //                auto tile_load_start = std::chrono::high_resolution_clock::now();
                 if (d_offset == 0) {
                     _tile_zero(1);
                 } else {
-                    _tile_loadd(1, results_chunk, STRIDE);
+                    _tile_loadd(1, results_chunk.get(), STRIDE);
                 }
 
-                _tile_loadd(2, centroid_chunks + (MAX_SIZE * MAX_COLS * centroid_chunk_idx), STRIDE);
-                _tile_loadd(3, data_chunk, STRIDE);
+                _tile_loadd(2, centroid_chunks.get() + (MAX_SIZE * MAX_COLS * centroid_chunk_idx), STRIDE);
+                _tile_loadd(3, data_chunk.get(), STRIDE);
 //                auto tile_load_end = std::chrono::high_resolution_clock::now();
 //                timing.tile_loading_time += tile_load_end - tile_load_start;
                 
                 local_tile_loads += 3;
 
-                // Actual computation timing
+                // AMX computation
 //                auto computation_start = std::chrono::high_resolution_clock::now();
                 _tile_dpbf16ps(1, 3, 2);
-                _tile_stored(1, results_chunk, STRIDE);
+                _tile_stored(1, results_chunk.get(), STRIDE);
 //                auto computation_end = std::chrono::high_resolution_clock::now();
 //                timing.actual_computation_time += computation_end - computation_start;
                 
                 local_computations++;
             }
 
-            // Result merging timing
+            // Result merging
 //            auto merge_start = std::chrono::high_resolution_clock::now();
-            for (size_t i = 0; i < actual_data_size; ++i) {
-                size_t global_point_idx = data_start + point_idx + i;
-
-                for (size_t j = 0; j < actual_centroid_size; ++j) {
-                    size_t global_centroid_idx = centroid_offset + j;
-                    size_t distance_idx = global_point_idx * centroid_count + global_centroid_idx;
-                    size_t result_idx = i * MAX_SIZE + j;
-
-                    distances[distance_idx] = results_chunk[result_idx];
-                }
-            }
+            merge_results_to_output(results_chunk.get(), distances, actual_data_size, actual_centroid_size,
+                                  data_start + point_idx, centroid_offset, centroid_count);
 //            auto merge_end = std::chrono::high_resolution_clock::now();
 //            timing.result_merging_time += merge_end - merge_start;
         }
@@ -283,19 +260,119 @@ void AMXInnerProductBF16PtrMTEnhanced::worker_thread_enhanced(
     total_computations.fetch_add(local_computations);
     timing.total_amx_operations = local_computations;
 
-    delete[] centroid_chunks;
-    delete[] data_chunk;
-    delete[] results_chunk;
-
     auto thread_end = std::chrono::high_resolution_clock::now();
     timing.total_thread_time = thread_end - thread_start;
 
+    // Clean up AMX state
     _tile_release();
     enhanced_thread_amx_initialized = false;
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::reset_timers()
-{
+// ==================== Helper Functions ====================
+
+void AMXInnerProductBF16PtrMTEnhanced::format_centroids_for_amx(
+    bfloat16_t* centroid_chunks, const bfloat16_t* centroids, 
+    size_t centroid_count, size_t dimension) {
+    
+    for (size_t centroid_offset = 0; centroid_offset < centroid_count / MAX_SIZE; centroid_offset++) {
+        for (size_t d_offset = 0; d_offset < dimension / MAX_COLS; d_offset++) {
+            size_t k = 0;
+            size_t chunk_idx = centroid_offset * (dimension / MAX_COLS) + d_offset;
+            
+            // 2-wide processing for AMX tile formatting
+            for (size_t i = 0; i < MAX_COLS; i += 2) {
+                for (size_t j = 0; j < MAX_SIZE; j++) {
+                    size_t centroid_idx = centroid_offset * MAX_SIZE + j;
+                    size_t dim_idx = d_offset * MAX_COLS + i;
+
+                    centroid_chunks[chunk_idx * MAX_COLS * MAX_SIZE + k] = 
+                        centroids[centroid_idx * dimension + dim_idx];
+                    k++;
+                    centroid_chunks[chunk_idx * MAX_COLS * MAX_SIZE + k] = 
+                        centroids[centroid_idx * dimension + dim_idx + 1];
+                    k++;
+                }
+            }
+        }
+    }
+}
+
+void AMXInnerProductBF16PtrMTEnhanced::format_data_chunk(
+    bfloat16_t* data_chunk, const bfloat16_t* data, 
+    size_t actual_data_size, size_t dimension, 
+    size_t data_offset, size_t d_offset) {
+    
+    const size_t AVX512_BF16_COUNT = 32;
+    
+    for (size_t i = 0; i < MAX_SIZE; i++) {
+        if (i < actual_data_size) {
+            const bfloat16_t* src = &data[(data_offset + i) * dimension + d_offset];
+            bfloat16_t* dst = &data_chunk[i * MAX_COLS];
+
+            // Process 32 bfloat16 values at a time with AVX-512
+            for (size_t j = 0; j < MAX_COLS; j += AVX512_BF16_COUNT) {
+                __m512i vec = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(src + j));
+                _mm512_storeu_si512(reinterpret_cast<__m512i*>(dst + j), vec);
+            }
+        } else {
+            // Zero padding for incomplete blocks
+            memset(&data_chunk[i * MAX_COLS], 0, MAX_COLS * sizeof(bfloat16_t));
+        }
+    }
+}
+
+void AMXInnerProductBF16PtrMTEnhanced::merge_results_to_output(
+    const float* results_chunk, float* distances,
+    size_t actual_data_size, size_t actual_centroid_size,
+    size_t global_data_offset, size_t centroid_offset, size_t centroid_count) {
+    
+    for (size_t i = 0; i < actual_data_size; ++i) {
+        size_t global_data_idx = global_data_offset + i;
+
+        for (size_t j = 0; j < actual_centroid_size; ++j) {
+            size_t global_centroid_idx = centroid_offset + j;
+            size_t distance_idx = global_data_idx * centroid_count + global_centroid_idx;
+            size_t result_idx = i * MAX_SIZE + j;
+
+            distances[distance_idx] = results_chunk[result_idx];
+        }
+    }
+}
+
+bfloat16_t AMXInnerProductBF16PtrMTEnhanced::float_to_bfloat16_enhanced(float f) {
+    uint32_t bits;
+    std::memcpy(&bits, &f, sizeof(float));
+    uint32_t rounding_bias = 0x00007FFF + ((bits >> 16) & 1);
+    return static_cast<bfloat16_t>((bits + rounding_bias) >> 16);
+}
+
+void AMXInnerProductBF16PtrMTEnhanced::float_to_bfloat16(
+    const float* input_buffer, bfloat16_t* output_buffer, size_t count) {
+    
+    const size_t simd_width = 32;
+    size_t simd_count = (count / simd_width) * simd_width;
+
+    // Vectorized conversion using AVX-512
+    for (size_t i = 0; i < simd_count; i += simd_width) {
+        __m512 float_vec1 = _mm512_loadu_ps(&input_buffer[i]);
+        __m512 float_vec2 = _mm512_loadu_ps(&input_buffer[i + 16]);
+
+        __m256i bf16_vec1 = _mm512_cvtneps_pbh(float_vec1);
+        __m256i bf16_vec2 = _mm512_cvtneps_pbh(float_vec2);
+
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(&output_buffer[i]), bf16_vec1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(&output_buffer[i + 16]), bf16_vec2);
+    }
+
+    // Handle remaining elements
+    for (size_t i = simd_count; i < count; ++i) {
+        output_buffer[i] = float_to_bfloat16_enhanced(input_buffer[i]);
+    }
+}
+
+// ==================== Timing and Analysis Methods ====================
+
+void AMXInnerProductBF16PtrMTEnhanced::reset_timers() {
     std::lock_guard<std::mutex> lock(timing_mutex);
     total_compute_time = std::chrono::duration<double>::zero();
     thread_spawn_time = std::chrono::duration<double>::zero();
@@ -307,8 +384,7 @@ void AMXInnerProductBF16PtrMTEnhanced::reset_timers()
     total_computations.store(0);
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::print_comprehensive_timing_stats() const
-{
+void AMXInnerProductBF16PtrMTEnhanced::print_comprehensive_timing_stats() const {
     std::cout << "\n" << std::string(80, '=') << std::endl;
     std::cout << "           COMPREHENSIVE MULTITHREADED AMX TIMING ANALYSIS" << std::endl;
     std::cout << std::string(80, '=') << std::endl;
@@ -329,7 +405,6 @@ void AMXInnerProductBF16PtrMTEnhanced::print_comprehensive_timing_stats() const
         std::cout << "\n🧵 Per-Thread Timing Statistics:" << std::endl;
         std::cout << "  Number of threads:            " << std::setw(10) << thread_timings.size() << std::endl;
         
-        // Calculate min/max/avg for thread times
         std::vector<double> thread_times;
         for (const auto& timing : thread_timings) {
             thread_times.push_back(timing.total_thread_time.count() * 1000.0);
@@ -358,8 +433,7 @@ void AMXInnerProductBF16PtrMTEnhanced::print_comprehensive_timing_stats() const
     std::cout << std::string(80, '=') << std::endl;
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
-{
+void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const {
     if (thread_timings.empty()) {
         std::cout << "No per-thread timing data available." << std::endl;
         return;
@@ -369,32 +443,24 @@ void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
     std::cout << "                                     PER-THREAD TIMING BREAKDOWN" << std::endl;
     std::cout << std::string(100, '=') << std::endl;
 
+    // Table header
     std::cout << std::left 
-              << std::setw(10) << "Thread"
-              << std::setw(10) << "Total"
-              << std::setw(10) << "Init"
-              << std::setw(10) << "Format"
-              << std::setw(10) << "DataFmt"
-              << std::setw(12) << "TileLoad"
-              << std::setw(12) << "Compute"
-              << std::setw(10) << "Merge"
+              << std::setw(8) << "Thread"
+              << std::setw(12) << "Total (ms)"
+              << std::setw(12) << "Init (ms)"
+              << std::setw(12) << "Format (ms)"
+              << std::setw(12) << "DataFmt (ms)"
+              << std::setw(12) << "TileLoad (ms)"
+              << std::setw(12) << "Compute (ms)"
+              << std::setw(12) << "Merge (ms)"
               << std::setw(10) << "Points"
-              << std::setw(6) << "Ops" << std::endl;
+              << std::setw(8) << "Ops" << std::endl;
               
-    std::cout << std::string(8, '-') << " "
-              << std::string(8, '-') << "  "
-              << std::string(7, '-') << "  "
-              << std::string(8, '-') << "  "
-              << std::string(10, '-') << "  "
-              << std::string(9, '-') << "  "
-              << std::string(9, '-') << "  "
-              << std::string(9, '-') << "  "
-              << std::string(8, '-') << "  "
-              << std::string(6, '-') << std::endl;
+    std::cout << std::string(100, '-') << std::endl;
 
     std::cout << std::fixed << std::setprecision(3);
     
-    // Calculate averages while printing individual threads
+    // Print individual thread data and calculate averages
     double avg_total_time = 0.0;
     double avg_init_time = 0.0;
     double avg_format_time = 0.0;
@@ -411,15 +477,15 @@ void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
         // Print individual thread data
         std::cout << std::left << std::setw(6) << i
                   << std::right
-                  << std::setw(8) << (timing.total_thread_time.count() * 1000.0) << "ms "
-                  << std::setw(6) << (timing.thread_init_time.count() * 1000.0) << "ms "
-                  << std::setw(8) << (timing.centroid_formatting_time.count() * 1000.0) << "ms "
-                  << std::setw(8) << (timing.data_formatting_time.count() * 1000.0) << "ms "
-                  << std::setw(8) << (timing.tile_loading_time.count() * 1000.0) << "ms "
-                  << std::setw(8) << (timing.actual_computation_time.count() * 1000.0) << "ms "
-                  << std::setw(10) << (timing.result_merging_time.count() * 1000.0) << "ms "
-                  << std::setw(7) << timing.data_points_processed << "    "
-                  << std::setw(5) << timing.total_amx_operations << std::endl;
+                  << std::setw(10) << (timing.total_thread_time.count() * 1000.0) << "  "
+                  << std::setw(10) << (timing.thread_init_time.count() * 1000.0) << "  "
+                  << std::setw(10) << (timing.centroid_formatting_time.count() * 1000.0) << "  "
+                  << std::setw(10) << (timing.data_formatting_time.count() * 1000.0) << "  "
+                  << std::setw(10) << (timing.tile_loading_time.count() * 1000.0) << "  "
+                  << std::setw(10) << (timing.actual_computation_time.count() * 1000.0) << "  "
+                  << std::setw(10) << (timing.result_merging_time.count() * 1000.0) << "  "
+                  << std::setw(8) << timing.data_points_processed << "  "
+                  << std::setw(6) << timing.total_amx_operations << std::endl;
         
         // Accumulate for averages
         avg_total_time += timing.total_thread_time.count() * 1000.0;
@@ -445,36 +511,24 @@ void AMXInnerProductBF16PtrMTEnhanced::print_per_thread_breakdown() const
     avg_points_processed /= num_threads;
     avg_ops /= num_threads;
     
-    // Print separator line for average
-    std::cout << std::string(8, '-') << " "
-              << std::string(8, '-') << "  "
-              << std::string(7, '-') << "  "
-              << std::string(8, '-') << "  "
-              << std::string(10, '-') << "  "
-              << std::string(9, '-') << "  "
-              << std::string(9, '-') << "  "
-              << std::string(9, '-') << "  "
-              << std::string(8, '-') << "  "
-              << std::string(6, '-') << std::endl;
-    
-    // Print average row
+    // Print separator and average row
+    std::cout << std::string(100, '-') << std::endl;
     std::cout << std::left << std::setw(6) << "AVG"
               << std::right
-              << std::setw(8) << avg_total_time << "ms "
-              << std::setw(6) << avg_init_time << "ms "
-              << std::setw(8) << avg_format_time << "ms "
-              << std::setw(8) << avg_data_format_time << "ms "
-              << std::setw(8) << avg_tile_load_time << "ms "
-              << std::setw(8) << avg_compute_time << "ms "
-              << std::setw(10) << avg_merge_time << "ms "
-              << std::setw(7) << static_cast<size_t>(avg_points_processed) << "    "
-              << std::setw(5) << static_cast<size_t>(avg_ops) << std::endl;
+              << std::setw(10) << avg_total_time << "  "
+              << std::setw(10) << avg_init_time << "  "
+              << std::setw(10) << avg_format_time << "  "
+              << std::setw(10) << avg_data_format_time << "  "
+              << std::setw(10) << avg_tile_load_time << "  "
+              << std::setw(10) << avg_compute_time << "  "
+              << std::setw(10) << avg_merge_time << "  "
+              << std::setw(8) << static_cast<size_t>(avg_points_processed) << "  "
+              << std::setw(6) << static_cast<size_t>(avg_ops) << std::endl;
 
     std::cout << std::string(100, '=') << std::endl;
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::print_performance_analysis() const
-{
+void AMXInnerProductBF16PtrMTEnhanced::print_performance_analysis() const {
     std::cout << "\n" << std::string(80, '=') << std::endl;
     std::cout << "                         PERFORMANCE ANALYSIS" << std::endl;
     std::cout << std::string(80, '=') << std::endl;
@@ -484,18 +538,14 @@ void AMXInnerProductBF16PtrMTEnhanced::print_performance_analysis() const
     analyze_threading_efficiency();
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::analyze_load_balancing() const
-{
+void AMXInnerProductBF16PtrMTEnhanced::analyze_load_balancing() const {
     if (thread_timings.empty()) return;
 
     std::cout << "\n🎯 Load Balancing Analysis:" << std::endl;
     
     std::vector<double> thread_times;
-    std::vector<size_t> points_processed;
-    
     for (const auto& timing : thread_timings) {
         thread_times.push_back(timing.total_thread_time.count() * 1000.0);
-        points_processed.push_back(timing.data_points_processed);
     }
     
     double min_time = *std::min_element(thread_times.begin(), thread_times.end());
@@ -516,8 +566,7 @@ void AMXInnerProductBF16PtrMTEnhanced::analyze_load_balancing() const
     }
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::analyze_memory_efficiency() const
-{
+void AMXInnerProductBF16PtrMTEnhanced::analyze_memory_efficiency() const {
     if (thread_timings.empty()) return;
 
     std::cout << "\n💾 Memory Efficiency Analysis:" << std::endl;
@@ -553,8 +602,7 @@ void AMXInnerProductBF16PtrMTEnhanced::analyze_memory_efficiency() const
     }
 }
 
-void AMXInnerProductBF16PtrMTEnhanced::analyze_threading_efficiency() const
-{
+void AMXInnerProductBF16PtrMTEnhanced::analyze_threading_efficiency() const {
     if (thread_timings.empty()) return;
 
     std::cout << "\n⚡ Threading Efficiency Analysis:" << std::endl;
@@ -582,34 +630,29 @@ void AMXInnerProductBF16PtrMTEnhanced::analyze_threading_efficiency() const
     }
 }
 
-// Timing getter implementations
-double AMXInnerProductBF16PtrMTEnhanced::get_total_compute_time_ms() const
-{
+// ==================== Timing Getters ====================
+
+double AMXInnerProductBF16PtrMTEnhanced::get_total_compute_time_ms() const {
     return total_compute_time.count() * 1000.0;
 }
 
-double AMXInnerProductBF16PtrMTEnhanced::get_thread_spawn_time_ms() const
-{
+double AMXInnerProductBF16PtrMTEnhanced::get_thread_spawn_time_ms() const {
     return thread_spawn_time.count() * 1000.0;
 }
 
-double AMXInnerProductBF16PtrMTEnhanced::get_thread_join_time_ms() const
-{
+double AMXInnerProductBF16PtrMTEnhanced::get_thread_join_time_ms() const {
     return thread_join_time.count() * 1000.0;
 }
 
-double AMXInnerProductBF16PtrMTEnhanced::get_memory_allocation_time_ms() const
-{
+double AMXInnerProductBF16PtrMTEnhanced::get_memory_allocation_time_ms() const {
     return memory_allocation_time.count() * 1000.0;
 }
 
-double AMXInnerProductBF16PtrMTEnhanced::get_initialization_time_ms() const
-{
+double AMXInnerProductBF16PtrMTEnhanced::get_initialization_time_ms() const {
     return initialization_time.count() * 1000.0;
 }
 
-double AMXInnerProductBF16PtrMTEnhanced::get_avg_thread_time_ms() const
-{
+double AMXInnerProductBF16PtrMTEnhanced::get_avg_thread_time_ms() const {
     if (thread_timings.empty()) return 0.0;
     
     double total = 0.0;
@@ -619,8 +662,7 @@ double AMXInnerProductBF16PtrMTEnhanced::get_avg_thread_time_ms() const
     return total / thread_timings.size();
 }
 
-double AMXInnerProductBF16PtrMTEnhanced::get_avg_actual_computation_time_ms() const
-{
+double AMXInnerProductBF16PtrMTEnhanced::get_avg_actual_computation_time_ms() const {
     if (thread_timings.empty()) return 0.0;
     
     double total = 0.0;
@@ -628,34 +670,4 @@ double AMXInnerProductBF16PtrMTEnhanced::get_avg_actual_computation_time_ms() co
         total += timing.actual_computation_time.count() * 1000.0;
     }
     return total / thread_timings.size();
-}
-
-// Helper function implementations
-bfloat16_t AMXInnerProductBF16PtrMTEnhanced::float_to_bfloat16_enhanced(float f)
-{
-    uint32_t bits;
-    std::memcpy(&bits, &f, sizeof(float));
-    uint32_t rounding_bias = 0x00007FFF + ((bits >> 16) & 1);
-    return static_cast<bfloat16_t>((bits + rounding_bias) >> 16);
-}
-
-void AMXInnerProductBF16PtrMTEnhanced::float_to_bfloat16(const float* input_buffer, bfloat16_t* output_buffer, size_t count)
-{
-    const size_t simd_width = 32;
-    size_t simd_count = (count / simd_width) * simd_width;
-
-    for (size_t i = 0; i < simd_count; i += simd_width) {
-        __m512 float_vec1 = _mm512_loadu_ps(&input_buffer[i]);
-        __m512 float_vec2 = _mm512_loadu_ps(&input_buffer[i + 16]);
-
-        __m256i bf16_vec1 = _mm512_cvtneps_pbh(float_vec1);
-        __m256i bf16_vec2 = _mm512_cvtneps_pbh(float_vec2);
-
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(&output_buffer[i]), bf16_vec1);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(&output_buffer[i + 16]), bf16_vec2);
-    }
-
-    for (size_t i = simd_count; i < count; ++i) {
-        output_buffer[i] = float_to_bfloat16_enhanced(input_buffer[i]);
-    }
 }
