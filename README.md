@@ -2,6 +2,29 @@
 
 A high-performance implementation of inner product (dot product) computation using Intel AMX (Advanced Matrix Extensions) instructions with comprehensive performance analysis and comparison against standard implementations.
 
+## 📚 Documentation
+
+### Significant Files
+- `AMXInnerProductBF16PtrMTEnhanced.h` - Main multi-threaded implementation
+- `AMXInnerProductBF16Ptr.h` - Single-threaded version
+- `AMXCommon.h` - Shared constants and types
+
+### Implementation Details
+- **AMX Tile Configuration**: 16x32 BF16 tiles with float32 accumulation (for 16 rows x 64 bytes)
+- **Memory Layout**: Row-major storage with cache-optimized chunking
+- **Prefetching Strategy**: Software prefetching with configurable distance
+- **Error Handling**: Comprehensive validation and graceful degradation
+
+### Full File Descriptions
+- `AMXInnerProductBF16PtrMTEnhanced.h` - Main multi-threaded implementation
+- `AMXInnerProductBF16Ptr.h` - Single-threaded version
+- `AMXCommon.h` - Shared constants and types
+- `HNSWLIBInnerProductPtr.h` - Multi-threaded AVX implementation via HNSWLIB library
+- `ScalarInnerProduct.h` - Single-threaded scalar calculation implementation for baseline reference and accuracy check
+- `comprehensive_testing.cpp` - Extensive AMX testing
+- `comprehensive_testing_with_hnswlib.cpp` - Testing with AMX and HNSWLIB comparison
+- `Makefile` - Used to compile all programs
+
 ## 🚀 Features
 
 ### Core Implementations
@@ -145,20 +168,6 @@ The enhanced implementation provides comprehensive performance metrics:
   Total AMX operations:           456,789
   AMX ops per millisecond:          164.3
 ```
-
-## 📚 Documentation
-
-### Implementation Details
-- **AMX Tile Configuration**: 16x32 BF16 tiles with float32 accumulation (for 16 rows x 64 bytes)
-- **Memory Layout**: Row-major storage with cache-optimized chunking
-- **Prefetching Strategy**: Software prefetching with configurable distance
-- **Error Handling**: Comprehensive validation and graceful degradation
-
-### API Reference
-See header files for detailed API documentation:
-- `AMXInnerProductBF16PtrMTEnhanced.h` - Main multi-threaded implementation
-- `AMXInnerProductBF16Ptr.h` - Single-threaded version
-- `AMXCommon.h` - Shared constants and types
 
 ---
 
