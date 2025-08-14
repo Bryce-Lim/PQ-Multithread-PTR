@@ -14,6 +14,7 @@ A high-performance implementation of inner product (dot product) computation usi
 - **Memory Layout**: Row-major storage with cache-optimized chunking
 - **Prefetching Strategy**: Software prefetching with configurable distance
 - **Error Handling**: Comprehensive validation and graceful degradation
+- More details can be found in this [slideshow/powerpoint](https://docs.google.com/presentation/d/1IO0sK3c4piftmLgF7CmL_-HYCduSP29WHkZgjfqMp2o/edit?usp=sharing)
 
 ### Full File Descriptions
 - `AMXInnerProductBF16PtrMTEnhanced.h` - Main multi-threaded implementation
